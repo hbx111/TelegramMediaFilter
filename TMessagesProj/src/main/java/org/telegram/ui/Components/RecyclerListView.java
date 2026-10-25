@@ -1065,6 +1065,7 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
 
             blurredTagDrawable = factory.create(fastScroll, backgroundProvider);
             blurredTagDrawable.setPadding(dp(6));
+            blurredTagDrawable.setThickness(dp(4));
             blurredTagDrawable.setRadius(dp(14));
         }
 
@@ -3108,6 +3109,10 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
 
     private final @NonNull EdgeEffectTrackerFactory edgeEffectTrackerFactory;
 
+    public float getEdgeEffectDistance(@EdgeEffectFactory.EdgeDirection int direction) {
+        return edgeEffectTrackerFactory.getDistance(direction);
+    }
+
     public boolean hasActiveEdgeEffects() {
         return edgeEffectTrackerFactory.hasVisibleEdges();
     }
@@ -3157,32 +3162,36 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
             //     canvas.drawColor(0x80FF00FF);
             }
         } else {
-            for (int a = 0, N = getItemDecorationCount(); a < N; a++) {
-                ItemDecoration itemDecoration = getItemDecorationAt(a);
-                if (itemDecoration instanceof IBlur3Capture) {
-                    if (itemDecoration == sectionsItemDecoration && !canCaptureSectionsDecorator) {
-                        continue;
-                    }
-                    final IBlur3Capture capture = (IBlur3Capture) itemDecoration;
-                    capture.capture(canvas, position);
-                }
-            }
-            for (int i = 0, N = getChildCount(); i < N; i++) {
-                final View child = getChildAt(i);
+            captureChildren(canvas, position, drawingTime);
+        }
+    }
 
-                final float left = child.getX();
-                final float top = child.getY();
-                final float right = left + child.getWidth();
-                final float bottom = top + child.getHeight();
-
-                if (!position.intersects(left, top, right, bottom)) {
+    protected void captureChildren(Canvas canvas, RectF position, long drawingTime) {
+        for (int a = 0, N = getItemDecorationCount(); a < N; a++) {
+            ItemDecoration itemDecoration = getItemDecorationAt(a);
+            if (itemDecoration instanceof IBlur3Capture) {
+                if (itemDecoration == sectionsItemDecoration && !canCaptureSectionsDecorator) {
                     continue;
                 }
-
-                ignoreClipChild = true;
-                drawChild(canvas, child, drawingTime);
-                ignoreClipChild = false;
+                final IBlur3Capture capture = (IBlur3Capture) itemDecoration;
+                capture.capture(canvas, position);
             }
+        }
+        for (int i = 0, N = getChildCount(); i < N; i++) {
+            final View child = getChildAt(i);
+
+            final float left = child.getX();
+            final float top = child.getY();
+            final float right = left + child.getWidth();
+            final float bottom = top + child.getHeight();
+
+            if (!position.intersects(left, top, right, bottom)) {
+                continue;
+            }
+
+            ignoreClipChild = true;
+            drawChild(canvas, child, drawingTime);
+            ignoreClipChild = false;
         }
     }
 
@@ -3609,8 +3618,13 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
     }
 
     private final Path clipPath = new Path();
+    /** Raised children may draw their own rounded surface outside the section outline. */
+    protected boolean shouldClipChildToSection(View child) {
+        return true;
+    }
+
     private void clipChild(Canvas canvas, View child) {
-        if (child == null || !sectionsItemDecoration.isSectionItem.run(child))
+        if (child == null || !shouldClipChildToSection(child) || !sectionsItemDecoration.isSectionItem.run(child))
             return;
 
         boolean prev, next;
@@ -3667,6 +3681,10 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
     }
 
     public Drawable getClipBackground(View child) {
+        return getClipBackground(child, false);
+    }
+
+    public Drawable getClipBackground(View child, boolean forceRound) {
         if (child.getParent() != this || !hasSections() || !sectionsItemDecoration.isSectionItem.run(child)) return null;
 
         boolean prev, next;
@@ -3687,13 +3705,13 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
             child.getX() + child.getWidth(),
             Math.min(getHeight() - (applyPaddingToSections ? getPaddingBottom() : 0), bottom(child))
         );
-        if (prev && next) {
+        if (prev && next && !forceRound) {
             prev = top(child) >= rect.top;
             next = bottom(child) <= rect.bottom;
             if (prev && next) return Theme.createRoundRectDrawable(0, Theme.getColor(Theme.key_windowBackgroundWhite, resourcesProvider));
         }
         final Path clipPath = new Path();
-        if (!prev && !next) {
+        if (!prev && !next || forceRound) {
             clipPath.rewind();
             clipPath.addRoundRect(rect, sectionRadius, sectionRadius, Path.Direction.CW);
         } else if (!prev) {

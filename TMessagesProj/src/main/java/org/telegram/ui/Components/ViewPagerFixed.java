@@ -900,7 +900,7 @@ public class ViewPagerFixed extends FrameLayout {
             onItemSelected(viewPages[0], oldView, currentPosition, oldPosition);
             setTranslationX(viewPages[0], 0);
             if (tabsView != null) {
-                tabsView.selectTab(currentPosition, nextPosition, currentProgress);
+                tabsView.selectTab(nextPosition, currentPosition, currentProgress);
             }
             onTabAnimationUpdate(true);
         }
@@ -1407,7 +1407,7 @@ public class ViewPagerFixed extends FrameLayout {
 
                 tabWidth = currentTab.titleWidth + (countWidth != 0 ? countWidth + dp(6 * (counterText != null ? 1.0f : editingStartAnimationProgress)) : 0);
                 int textX = (getMeasuredWidth() - tabWidth) / 2;
-                if (currentTab.title == null && currentText != null || !currentTab.title.equals(currentText)) {
+                if (currentTab.title == null && currentText != null || !TextUtils.equals(currentTab.title, currentText)) {
                     currentText = currentTab.title = Emoji.replaceEmoji(currentTab.title, textPaint.getFontMetricsInt(), false);
                     if (this.text != null) {
                         this.text.detach();

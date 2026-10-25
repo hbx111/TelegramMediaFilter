@@ -53,6 +53,8 @@ public class DialogObject {
         } else if (dialog instanceof TLRPC.TL_dialogFolder) {
             TLRPC.TL_dialogFolder dialogFolder = (TLRPC.TL_dialogFolder) dialog;
             dialog.id = makeFolderDialogId(dialogFolder.folder.id);
+        } else if (dialog instanceof TLRPC.TL_dialogCommunity) {
+            dialog.id = -dialog.community_id;
         }
     }
 
@@ -486,7 +488,7 @@ public class DialogObject {
         return null;
     }
 
-    public static TL_bots.botVerification getBotVerification(TLObject object) {
+    public static TL_bots.BotVerification getBotVerification(TLObject object) {
         if (object instanceof TLRPC.UserFull) {
             return ((TLRPC.UserFull) object).bot_verification;
         } else if (object instanceof TLRPC.ChatFull) {

@@ -57,6 +57,7 @@ import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.ActionBarMenu;
 import org.telegram.ui.ActionBar.ActionBarMenuItem;
 import org.telegram.ui.ActionBar.BaseFragment;
+import org.telegram.ui.ActionBar.MessageDrawable;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Cells.ChatActionCell;
 import org.telegram.ui.ChatActivity;
@@ -2525,13 +2526,13 @@ public class ChatAttachAlertPhotoLayoutPreview extends ChatAttachAlert.AttachAle
                 return getT() >= 0.95f ? this.groupHeight * maxHeight * getPreviewScale() : measure();
             }
 
-            private RectF buttonTextRect = new RectF();
+            private final RectF buttonTextRect = new RectF();
             private Text buttonText;
             private long buttonTextPrice;
-            private Paint buttonTextBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint buttonTextBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-            private Theme.MessageDrawable messageBackground = (Theme.MessageDrawable) getThemedDrawable(Theme.key_drawable_msgOutMedia);
-            private Theme.MessageDrawable.PathDrawParams backgroundCacheParams = new Theme.MessageDrawable.PathDrawParams();
+            private final MessageDrawable messageBackground = (MessageDrawable) getThemedDrawable(Theme.key_drawable_msgOutMedia);
+            private final MessageDrawable.PathDrawParams backgroundCacheParams = new MessageDrawable.PathDrawParams();
             public boolean draw(Canvas canvas) {
                 boolean update = false;
                 final float t = interpolator.getInterpolation(Math.min(1, (SystemClock.elapsedRealtime() - lastMediaUpdate) / (float) updateDuration));

@@ -8,11 +8,9 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
-import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -49,6 +47,7 @@ import android.view.WindowManager;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import androidx.annotation.Nullable;
 import androidx.core.graphics.ColorUtils;
 import androidx.dynamicanimation.animation.FloatValueHolder;
 import androidx.dynamicanimation.animation.SpringAnimation;
@@ -97,9 +96,9 @@ import org.telegram.ui.Components.URLSpanNoUnderline;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 
-@TargetApi(18)
 public class CameraScanActivity extends BaseFragment {
 
+    private @Nullable OrientationController.Request portraitRequest;
     private TextView titleTextView;
     private TextView descriptionText;
     private CameraView cameraView;
@@ -277,8 +276,9 @@ public class CameraScanActivity extends BaseFragment {
     public void onFragmentDestroy() {
         super.onFragmentDestroy();
         destroy(false, null);
-        if (getParentActivity() != null) {
-            getParentActivity().setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        if (portraitRequest != null) {
+            portraitRequest.release();
+            portraitRequest = null;
         }
         if (visionQrReader != null) {
             visionQrReader.release();
@@ -771,8 +771,9 @@ public class CameraScanActivity extends BaseFragment {
             });
         }
 
-        if (getParentActivity() != null) {
-            getParentActivity().setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        final OrientationController orientation = OrientationController.of(getParentActivity());
+        if (orientation != null && portraitRequest == null) {
+            portraitRequest = orientation.requestPortrait();
         }
         fragmentView.setKeepScreenOn(true);
 
@@ -949,8 +950,8 @@ public class CameraScanActivity extends BaseFragment {
         if (normalBounds == null) {
             normalBounds = new RectF();
         }
-        int width = Math.max(AndroidUtilities.displaySize.x, fragmentView.getWidth()),
-            height = Math.max(AndroidUtilities.displaySize.y, fragmentView.getHeight()),
+        int width = fragmentView.getWidth(),
+            height = fragmentView.getHeight(),
             side = (int) (Math.min(width, height) / 1.5f);
         normalBounds.set(
             (width - side) / 2f / (float) width,

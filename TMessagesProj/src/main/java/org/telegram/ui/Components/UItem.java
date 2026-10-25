@@ -91,6 +91,13 @@ public class UItem extends AdapterWithDiffUtils.Item {
         i.intValue = LayoutHelper.MATCH_PARENT;
         return i;
     }
+    public static UItem asCustomShadow(int id, View view) {
+        UItem i = new UItem(UniversalAdapter.VIEW_TYPE_CUSTOM_SHADOW, false);
+        i.id = id;
+        i.view = view;
+        i.intValue = LayoutHelper.MATCH_PARENT;
+        return i;
+    }
     public static UItem asCustomShadow(View view) {
         UItem i = new UItem(UniversalAdapter.VIEW_TYPE_CUSTOM_SHADOW, false);
         i.view = view;
@@ -224,6 +231,14 @@ public class UItem extends AdapterWithDiffUtils.Item {
         return i;
     }
 
+    public static UItem asButtonLoadingValue(int id, CharSequence text) {
+        UItem i = new UItem(UniversalAdapter.VIEW_TYPE_TEXT, false);
+        i.id = id;
+        i.text = text;
+        i.locked = true;
+        return i;
+    }
+
     public static UItem asButton(int id, int iconResId, CharSequence text) {
         UItem i = new UItem(UniversalAdapter.VIEW_TYPE_TEXT, false);
         i.id = id;
@@ -301,6 +316,14 @@ public class UItem extends AdapterWithDiffUtils.Item {
 
     public static UItem asRadio(int id, CharSequence text, CharSequence value) {
         UItem i = new UItem(UniversalAdapter.VIEW_TYPE_RADIO, false);
+        i.id = id;
+        i.text = text;
+        i.textValue = value;
+        return i;
+    }
+
+    public static UItem asRadio2(int id, CharSequence text, CharSequence value) {
+        UItem i = new UItem(UniversalAdapter.VIEW_TYPE_RADIO_2, false);
         i.id = id;
         i.text = text;
         i.textValue = value;
@@ -508,6 +531,15 @@ public class UItem extends AdapterWithDiffUtils.Item {
         UItem item = new UItem(UniversalAdapter.VIEW_TYPE_SWITCH, false);
         item.id = id;
         item.text = text;
+        item.intValue = 1;
+        return item;
+    }
+
+    public static UItem asSwitchNoIcon(int id, CharSequence text) {
+        UItem item = new UItem(UniversalAdapter.VIEW_TYPE_SWITCH, false);
+        item.id = id;
+        item.text = text;
+        item.intValue = 0;
         return item;
     }
 

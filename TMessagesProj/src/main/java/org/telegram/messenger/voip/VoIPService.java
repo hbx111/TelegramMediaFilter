@@ -125,6 +125,7 @@ import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.Vector;
 import org.telegram.tgnet.tl.TL_account;
 import org.telegram.tgnet.tl.TL_phone;
+import org.telegram.tgnet.tl.TL_update;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.BottomSheet;
 import org.telegram.ui.ActionBar.Theme;
@@ -166,7 +167,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @SuppressLint("NewApi")
-public class VoIPService extends Service implements SensorEventListener, AudioManager.OnAudioFocusChangeListener, VoIPController.ConnectionStateListener, NotificationCenter.NotificationCenterDelegate, VoIPServiceState {
+public class VoIPService extends Service implements SensorEventListener, AudioManager.OnAudioFocusChangeListener, NotificationCenter.NotificationCenterDelegate, VoIPServiceState {
 
 	public static final int CALL_MIN_LAYER = 65;
 
@@ -393,10 +394,14 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			if (audioDeviceCallback != null) {
 				am.unregisterAudioDeviceCallback(audioDeviceCallback);
 			}
+			if (communicationDeviceListener != null) {
+				am.removeOnCommunicationDeviceChangedListener(communicationDeviceListener);
+				communicationDeviceListener = null;
+			}
 			if (!USE_CONNECTION_SERVICE && sharedInstance == null) {
 				if (isBtHeadsetConnected) {
-					am.stopBluetoothSco();
-					am.setBluetoothScoOn(false);
+					vam.stopBluetooth();
+					vam.setBluetoothOn(false);
 					bluetoothScoActive = false;
 					bluetoothScoConnecting = false;
 				}
@@ -450,6 +455,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 	};
 
 	private AudioDeviceCallback audioDeviceCallback;
+	private AudioManager.OnCommunicationDeviceChangedListener communicationDeviceListener;
 
 	private BroadcastReceiver receiver = new BroadcastReceiver() {
 
@@ -461,11 +467,10 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 					proximityWakelock.release();
 				}
 				if (isHeadsetPlugged) {
-					AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
 					VoipAudioManager vam = VoipAudioManager.get();
 					if (vam.isSpeakerphoneOn()) {
 						previousAudioOutput = 0;
-					} else if (am.isBluetoothScoOn()) {
+					} else if (vam.isBluetoothOn()) {
 						previousAudioOutput = 2;
 					} else {
 						previousAudioOutput = 1;
@@ -492,7 +497,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 					FileLog.e("Bluetooth SCO state updated: " + state);
 				}
 				if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED && isBtHeadsetConnected) {
-					if (!btAdapter.isEnabled() || !PermissionRequest.hasPermission(Manifest.permission.BLUETOOTH_CONNECT) || btAdapter.getProfileConnectionState(BluetoothProfile.HEADSET) != BluetoothProfile.STATE_CONNECTED) {
+					if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? VoipAudioManager.get().findBluetoothDevice() == null : (!btAdapter.isEnabled() || !PermissionRequest.hasPermission(Manifest.permission.BLUETOOTH_CONNECT) || btAdapter.getProfileConnectionState(BluetoothProfile.HEADSET) != BluetoothProfile.STATE_CONNECTED)) {
 						updateBluetoothHeadsetState(false);
 						return;
 					}
@@ -503,10 +508,9 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 					fetchBluetoothDeviceName();
 					if (needSwitchToBluetoothAfterScoActivates) {
 						needSwitchToBluetoothAfterScoActivates = false;
-						AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
 						VoipAudioManager vam = VoipAudioManager.get();
 						vam.setSpeakerphoneOn(false);
-						am.setBluetoothScoOn(true);
+						vam.setBluetoothOn(true);
 					}
 				}
 				for (VoIPService.StateListener l : stateListeners) {
@@ -1518,7 +1522,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 		return currentState == STATE_HANGING_UP;
 	}
 
-	public void onSignalingData(TLRPC.TL_updatePhoneCallSignalingData data) {
+	public void onSignalingData(TL_update.TL_updatePhoneCallSignalingData data) {
 		if (user == null || tgVoip[CAPTURE_DEVICE_CAMERA] == null || tgVoip[CAPTURE_DEVICE_CAMERA].isGroup() || getCallID() != data.phone_call_id) {
 			return;
 		}
@@ -1538,7 +1542,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 		}
 	}
 
-	public void onGroupCallParticipantsUpdate(TLRPC.TL_updateGroupCallParticipants update) {
+	public void onGroupCallParticipantsUpdate(TL_update.TL_updateGroupCallParticipants update) {
 		if (groupCall == null || groupCall.call.id != update.call.id) {
 			return;
 		}
@@ -1964,8 +1968,8 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 					TLRPC.Updates updates = (TLRPC.Updates) response;
 					for (int a = 0; a < updates.updates.size(); a++) {
 						TLRPC.Update update = updates.updates.get(a);
-						if (update instanceof TLRPC.TL_updateGroupCall) {
-							TLRPC.TL_updateGroupCall updateGroupCall = (TLRPC.TL_updateGroupCall) update;
+						if (update instanceof TL_update.TL_updateGroupCall) {
+							TL_update.TL_updateGroupCall updateGroupCall = (TL_update.TL_updateGroupCall) update;
 							AndroidUtilities.runOnUIThread(() -> {
 								if (sharedInstance == null) {
 									return;
@@ -2032,8 +2036,8 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 					long selfId = getSelfId();
 					for (int a = 0, N = updates.updates.size(); a < N; a++) {
 						TLRPC.Update update = updates.updates.get(a);
-						if (update instanceof TLRPC.TL_updateGroupCallParticipants) {
-							TLRPC.TL_updateGroupCallParticipants updateGroupCallParticipants = (TLRPC.TL_updateGroupCallParticipants) update;
+						if (update instanceof TL_update.TL_updateGroupCallParticipants) {
+							TL_update.TL_updateGroupCallParticipants updateGroupCallParticipants = (TL_update.TL_updateGroupCallParticipants) update;
 							for (int b = 0, N2 = updateGroupCallParticipants.participants.size(); b < N2; b++) {
 								TLRPC.GroupCallParticipant participant = updateGroupCallParticipants.participants.get(b);
 								if (MessageObject.getPeerId(participant.peer) == selfId) {
@@ -2044,8 +2048,8 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 									break;
 								}
 							}
-						} else if (update instanceof TLRPC.TL_updateGroupCallConnection) {
-							TLRPC.TL_updateGroupCallConnection updateGroupCallConnection = (TLRPC.TL_updateGroupCallConnection) update;
+						} else if (update instanceof TL_update.TL_updateGroupCallConnection) {
+							TL_update.TL_updateGroupCallConnection updateGroupCallConnection = (TL_update.TL_updateGroupCallConnection) update;
 							if (!updateGroupCallConnection.presentation) {
 								myParams = updateGroupCallConnection.params;
 							}
@@ -2148,7 +2152,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 					MessagesController.getInstance(currentAccount).putChats(updates.chats, false);
 
 					TLRPC.GroupCall groupCall1 = null;
-					for (TLRPC.TL_updateGroupCall u : findUpdatesAndRemove(updates, TLRPC.TL_updateGroupCall.class)) {
+					for (TL_update.TL_updateGroupCall u : findUpdatesAndRemove(updates, TL_update.TL_updateGroupCall.class)) {
 						groupCall1 = u.call;
 					}
 
@@ -2334,9 +2338,9 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 						TLRPC.Updates updates = (TLRPC.Updates) response;
 						long selfId = getSelfId();
 
-						final ArrayList<TLRPC.TL_updateGroupCallChainBlocks> blockUpdates = findUpdatesAndRemove(updates, TLRPC.TL_updateGroupCallChainBlocks.class);
+						final ArrayList<TL_update.TL_updateGroupCallChainBlocks> blockUpdates = findUpdatesAndRemove(updates, TL_update.TL_updateGroupCallChainBlocks.class);
 
-						for (TLRPC.TL_updateGroupCall upd : findUpdates(updates, TLRPC.TL_updateGroupCall.class)) {
+						for (TL_update.TL_updateGroupCall upd : findUpdates(updates, TL_update.TL_updateGroupCall.class)) {
 							final TLRPC.GroupCall groupCall1 = upd.call;
 							if (groupCall != null) {
 								groupCall.setCall(AccountInstance.getInstance(currentAccount), 0, groupCall1);
@@ -2346,7 +2350,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 							}
 						}
 
-						for (TLRPC.TL_updateGroupCallParticipants upd : findUpdates(updates, TLRPC.TL_updateGroupCallParticipants.class)) {
+						for (TL_update.TL_updateGroupCallParticipants upd : findUpdates(updates, TL_update.TL_updateGroupCallParticipants.class)) {
 							for (int b = 0, N2 = upd.participants.size(); b < N2; b++) {
 								TLRPC.GroupCallParticipant participant = upd.participants.get(b);
 								if (MessageObject.getPeerId(participant.peer) == selfId) {
@@ -2359,7 +2363,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 							}
 						}
 
-						for (TLRPC.TL_updateGroupCallConnection upd : findUpdates(updates, TLRPC.TL_updateGroupCallConnection.class)) {
+						for (TL_update.TL_updateGroupCallConnection upd : findUpdates(updates, TL_update.TL_updateGroupCallConnection.class)) {
 							if (!upd.presentation) {
 								myParams = upd.params;
 							}
@@ -2369,7 +2373,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 						AndroidUtilities.runOnUIThread(() -> {
 							if (conference == null) return;
 							conference.joined();
-							for (TLRPC.TL_updateGroupCallChainBlocks upd : blockUpdates) {
+							for (TL_update.TL_updateGroupCallChainBlocks upd : blockUpdates) {
 								conference.applyUpdate(0, upd, true, null);
 							}
 							conference.forcePoll();
@@ -2424,25 +2428,25 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 													MessagesController.getInstance(currentAccount).processUpdates(updates2, false);
 													AndroidUtilities.runOnUIThread(() -> {
 														int msg_id = 0;
-														if (updates2.update instanceof TLRPC.TL_updateNewMessage) {
-															final TLRPC.TL_updateNewMessage updateNewMessage = (TLRPC.TL_updateNewMessage) updates2.update;
+														if (updates2.update instanceof TL_update.TL_updateNewMessage) {
+															final TL_update.TL_updateNewMessage updateNewMessage = (TL_update.TL_updateNewMessage) updates2.update;
 															if (updateNewMessage.message != null && updateNewMessage.message.action instanceof TLRPC.TL_messageActionConferenceCall) {
 																msg_id = updateNewMessage.message.id;
 															}
-														} else if (updates2.update instanceof TLRPC.TL_updateMessageID) {
-															final TLRPC.TL_updateMessageID u = (TLRPC.TL_updateMessageID) updates2.update;
+														} else if (updates2.update instanceof TL_update.TL_updateMessageID) {
+															final TL_update.TL_updateMessageID u = (TL_update.TL_updateMessageID) updates2.update;
 															msg_id = u.id;
 														} else if (updates2.updates != null) {
 															for (int i = 0; i < updates2.updates.size(); ++i) {
 																final TLRPC.Update u = updates2.updates.get(i);
-																if (u instanceof TLRPC.TL_updateNewMessage) {
-																	final TLRPC.TL_updateNewMessage updateNewMessage = (TLRPC.TL_updateNewMessage) u;
+																if (u instanceof TL_update.TL_updateNewMessage) {
+																	final TL_update.TL_updateNewMessage updateNewMessage = (TL_update.TL_updateNewMessage) u;
 																	if (updateNewMessage.message != null && updateNewMessage.message.action instanceof TLRPC.TL_messageActionConferenceCall) {
 																		msg_id = updateNewMessage.message.id;
 																		break;
 																	}
-																} else if (u instanceof TLRPC.TL_updateMessageID) {
-																	msg_id = ((TLRPC.TL_updateMessageID) u).id;
+																} else if (u instanceof TL_update.TL_updateMessageID) {
+																	msg_id = ((TL_update.TL_updateMessageID) u).id;
 																	break;
 																}
 															}
@@ -2518,25 +2522,25 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 											MessagesController.getInstance(currentAccount).processUpdates(updates2, false);
 											AndroidUtilities.runOnUIThread(() -> {
 												int msg_id = 0;
-												if (updates2.update instanceof TLRPC.TL_updateNewMessage) {
-													final TLRPC.TL_updateNewMessage updateNewMessage = (TLRPC.TL_updateNewMessage) updates2.update;
+												if (updates2.update instanceof TL_update.TL_updateNewMessage) {
+													final TL_update.TL_updateNewMessage updateNewMessage = (TL_update.TL_updateNewMessage) updates2.update;
 													if (updateNewMessage.message != null && updateNewMessage.message.action instanceof TLRPC.TL_messageActionConferenceCall) {
 														msg_id = updateNewMessage.message.id;
 													}
-												} else if (updates2.update instanceof TLRPC.TL_updateMessageID) {
-													final TLRPC.TL_updateMessageID u = (TLRPC.TL_updateMessageID) updates2.update;
+												} else if (updates2.update instanceof TL_update.TL_updateMessageID) {
+													final TL_update.TL_updateMessageID u = (TL_update.TL_updateMessageID) updates2.update;
 													msg_id = u.id;
 												} else if (updates2.updates != null) {
 													for (int i = 0; i < updates2.updates.size(); ++i) {
 														final TLRPC.Update u = updates2.updates.get(i);
-														if (u instanceof TLRPC.TL_updateNewMessage) {
-															final TLRPC.TL_updateNewMessage updateNewMessage = (TLRPC.TL_updateNewMessage) u;
+														if (u instanceof TL_update.TL_updateNewMessage) {
+															final TL_update.TL_updateNewMessage updateNewMessage = (TL_update.TL_updateNewMessage) u;
 															if (updateNewMessage.message != null && updateNewMessage.message.action instanceof TLRPC.TL_messageActionConferenceCall) {
 																msg_id = updateNewMessage.message.id;
 																break;
 															}
-														} else if (u instanceof TLRPC.TL_updateMessageID) {
-															msg_id = ((TLRPC.TL_updateMessageID) u).id;
+														} else if (u instanceof TL_update.TL_updateMessageID) {
+															msg_id = ((TL_update.TL_updateMessageID) u).id;
 															break;
 														}
 													}
@@ -2604,7 +2608,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 								BaseFragment lastFragment = LaunchActivity.getSafeLastFragment();
 								if (lastFragment != null) {
 									BulletinFactory.of(lastFragment)
-										.createSimpleBulletin(R.raw.linkbroken, getString(R.string.ConferenceClosed))
+										.createSimpleBulletin(R.raw.linkbroken, LocaleController.getString(R.string.ConferenceClosed))
 										.show()
 										.hideAfterBottomSheet = false;
 								}
@@ -2676,13 +2680,13 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 						long selfId = getSelfId();
 						for (int a = 0, N = updates.updates.size(); a < N; a++) {
 							TLRPC.Update update = updates.updates.get(a);
-							if (update instanceof TLRPC.TL_updateGroupCallConnection) {
-								TLRPC.TL_updateGroupCallConnection updateGroupCallConnection = (TLRPC.TL_updateGroupCallConnection) update;
+							if (update instanceof TL_update.TL_updateGroupCallConnection) {
+								TL_update.TL_updateGroupCallConnection updateGroupCallConnection = (TL_update.TL_updateGroupCallConnection) update;
 								if (updateGroupCallConnection.presentation) {
 									tgVoip[CAPTURE_DEVICE_SCREEN].setJoinResponsePayload(updateGroupCallConnection.params.data);
 								}
-							} else if (update instanceof TLRPC.TL_updateGroupCallParticipants) {
-								TLRPC.TL_updateGroupCallParticipants updateGroupCallParticipants = (TLRPC.TL_updateGroupCallParticipants) update;
+							} else if (update instanceof TL_update.TL_updateGroupCallParticipants) {
+								TL_update.TL_updateGroupCallParticipants updateGroupCallParticipants = (TL_update.TL_updateGroupCallParticipants) update;
 								for (int b = 0, N2 = updateGroupCallParticipants.participants.size(); b < N2; b++) {
 									TLRPC.GroupCallParticipant participant = updateGroupCallParticipants.participants.get(b);
 									if (MessageObject.getPeerId(participant.peer) == selfId) {
@@ -3448,16 +3452,6 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 				AndroidUtilities.runOnUIThread(() -> Toast.makeText(VoIPService.this, "This call uses TCP which will degrade its quality.", Toast.LENGTH_SHORT).show());
 			}
 
-			// proxy
-			Instance.Proxy proxy = null;
-			if (preferences.getBoolean("proxy_enabled", false) && preferences.getBoolean("proxy_enabled_calls", false)) {
-				final String server = preferences.getString("proxy_ip", null);
-				final String secret = preferences.getString("proxy_secret", null);
-				if (!TextUtils.isEmpty(server) && TextUtils.isEmpty(secret)) {
-					proxy = new Instance.Proxy(server, preferences.getInt("proxy_port", 0), preferences.getString("proxy_user", null), preferences.getString("proxy_pass", null));
-				}
-			}
-
 			// encryption key
 			final Instance.EncryptionKey encryptionKey = new Instance.EncryptionKey(authKey, isOutgoing);
 
@@ -3476,7 +3470,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 				}
 			}
 			// init
-			tgVoip[CAPTURE_DEVICE_CAMERA] = Instance.makeInstance(privateCall.protocol.library_versions.get(0), config, persistentStateFilePath, endpoints, proxy, getNetworkType(), encryptionKey, remoteSink[CAPTURE_DEVICE_CAMERA], captureDevice[CAPTURE_DEVICE_CAMERA], (uids, levels, voice) -> {
+			tgVoip[CAPTURE_DEVICE_CAMERA] = Instance.makeInstance(privateCall.protocol.library_versions.get(0), config, persistentStateFilePath, endpoints, null, getNetworkType(), encryptionKey, remoteSink[CAPTURE_DEVICE_CAMERA], captureDevice[CAPTURE_DEVICE_CAMERA], (uids, levels, voice) -> {
 				if (sharedInstance == null || privateCall == null) {
 					return;
 				}
@@ -3817,12 +3811,11 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 				systemCallConnection.setAudioRoute(systemCallConnection.getCallAudioState().getRoute() == CallAudioState.ROUTE_BLUETOOTH ? CallAudioState.ROUTE_WIRED_OR_EARPIECE : CallAudioState.ROUTE_BLUETOOTH);
 			}
 		} else if (audioConfigured && !USE_CONNECTION_SERVICE) {
-			AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
 			VoipAudioManager vam = VoipAudioManager.get();
 			if (hasEarpiece()) {
 				vam.setSpeakerphoneOn(!vam.isSpeakerphoneOn());
 			} else {
-				am.setBluetoothScoOn(!am.isBluetoothScoOn());
+				vam.setBluetoothOn(!vam.isBluetoothOn());
 			}
 			vam.isBluetoothAndSpeakerOnAsync((isBluetoothOn, isSpeakerOn) -> {
 				updateOutputGainControlState();
@@ -3843,7 +3836,6 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 		if (BuildVars.LOGS_ENABLED) {
 			FileLog.d("setAudioOutput " + which);
 		}
-		AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
 		VoipAudioManager vam = VoipAudioManager.get();
 		if (USE_CONNECTION_SERVICE && systemCallConnection != null) {
 			switch (which) {
@@ -3863,12 +3855,12 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 					if (!bluetoothScoActive) {
 						needSwitchToBluetoothAfterScoActivates = true;
 						try {
-							am.startBluetoothSco();
+							vam.startBluetooth();
 						} catch (Throwable e) {
 							FileLog.e(e);
 						}
 					} else {
-						am.setBluetoothScoOn(true);
+						vam.setBluetoothOn(true);
 						vam.setSpeakerphoneOn(false);
 					}
 					audioRouteToSet = AUDIO_ROUTE_BLUETOOTH;
@@ -3876,22 +3868,22 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 				case 1:
 					needSwitchToBluetoothAfterScoActivates = false;
 					if (bluetoothScoActive || bluetoothScoConnecting) {
-						am.stopBluetoothSco();
+						vam.stopBluetooth();
 						bluetoothScoActive = false;
 						bluetoothScoConnecting = false;
 					}
 					vam.setSpeakerphoneOn(false);
-					am.setBluetoothScoOn(false);
+					vam.setBluetoothOn(false);
 					audioRouteToSet = AUDIO_ROUTE_EARPIECE;
 					break;
 				case 0:
 					needSwitchToBluetoothAfterScoActivates = false;
 					if (bluetoothScoActive || bluetoothScoConnecting) {
-						am.stopBluetoothSco();
+						vam.stopBluetooth();
 						bluetoothScoActive = false;
 						bluetoothScoConnecting = false;
 					}
-					am.setBluetoothScoOn(false);
+					vam.setBluetoothOn(false);
 					vam.setSpeakerphoneOn(true);
 					audioRouteToSet = AUDIO_ROUTE_SPEAKER;
 					break;
@@ -3923,9 +3915,8 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			int route = systemCallConnection.getCallAudioState().getRoute();
 			return hasEarpiece() ? route == CallAudioState.ROUTE_SPEAKER : route == CallAudioState.ROUTE_BLUETOOTH;
 		} else if (audioConfigured && !USE_CONNECTION_SERVICE) {
-			AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
 			VoipAudioManager vam = VoipAudioManager.get();
-			return hasEarpiece() ? vam.isSpeakerphoneOn() : am.isBluetoothScoOn();
+			return hasEarpiece() ? vam.isSpeakerphoneOn() : vam.isBluetoothOn();
 		}
 		return speakerphoneStateToSet;
 	}
@@ -3946,9 +3937,8 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			return audioRouteToSet;
 		}
 		if (audioConfigured) {
-			AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
 			VoipAudioManager vam = VoipAudioManager.get();
-			if (am.isBluetoothScoOn()) {
+			if (vam.isBluetoothOn()) {
 				return AUDIO_ROUTE_BLUETOOTH;
 			} else if (vam.isSpeakerphoneOn()) {
 				return AUDIO_ROUTE_SPEAKER;
@@ -4216,8 +4206,8 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			VoipAudioManager vam = VoipAudioManager.get();
 			if (!USE_CONNECTION_SERVICE) {
 				if (isBtHeadsetConnected || bluetoothScoActive || bluetoothScoConnecting) {
-					am.stopBluetoothSco();
-					am.setBluetoothScoOn(false);
+					vam.stopBluetooth();
+					vam.setBluetoothOn(false);
 					vam.setSpeakerphoneOn(false);
 					bluetoothScoActive = false;
 					bluetoothScoConnecting = false;
@@ -4248,6 +4238,10 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			}
 			if (audioDeviceCallback != null) {
 				am.unregisterAudioDeviceCallback(audioDeviceCallback);
+			}
+			if (communicationDeviceListener != null) {
+				am.removeOnCommunicationDeviceChangedListener(communicationDeviceListener);
+				communicationDeviceListener = null;
 			}
 
 			Utilities.globalQueue.postRunnable(() -> {
@@ -4686,6 +4680,20 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			if (audioDeviceCallback != null) {
 				am.registerAudioDeviceCallback(audioDeviceCallback, new Handler(Looper.getMainLooper()));
 			}
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && communicationDeviceListener == null) {
+				communicationDeviceListener = device -> {
+					bluetoothScoConnecting = false;
+					bluetoothScoActive = VoipAudioManager.isBluetoothDevice(device);
+					if (bluetoothScoActive) {
+						needSwitchToBluetoothAfterScoActivates = false;
+						currentBluetoothDeviceName = device.getProductName().toString();
+					}
+					for (StateListener l : stateListeners) {
+						l.onAudioSettingsChanged();
+					}
+				};
+				am.addOnCommunicationDeviceChangedListener(AndroidUtilities::runOnUIThread, communicationDeviceListener);
+			}
 			am.registerMediaButtonEventReceiver(new ComponentName(this, VoIPMediaButtonReceiver.class));
 
 			checkUpdateBluetoothHeadset();
@@ -4733,7 +4741,16 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			try {
 				MediaRouter mr = (MediaRouter) getSystemService(Context.MEDIA_ROUTER_SERVICE);
 				AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-				if (Build.VERSION.SDK_INT < 24) {
+				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+					AudioDeviceInfo device = VoipAudioManager.get().findBluetoothDevice();
+					if (device != null) {
+						currentBluetoothDeviceName = device.getProductName().toString();
+					}
+					updateBluetoothHeadsetState(device != null);
+					for (StateListener l : stateListeners) {
+						l.onAudioSettingsChanged();
+					}
+				} else if (Build.VERSION.SDK_INT < 24) {
 					int headsetState = btAdapter.getProfileConnectionState(BluetoothProfile.HEADSET);
 					updateBluetoothHeadsetState(headsetState == BluetoothProfile.STATE_CONNECTED);
 					for (StateListener l : stateListeners) {
@@ -4836,7 +4853,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 				try {
 					if (hasRtmpStream()) {
 						am.setMode(AudioManager.MODE_NORMAL);
-						am.setBluetoothScoOn(false);
+						VoipAudioManager.get().setBluetoothOn(false);
 						AndroidUtilities.runOnUIThread(() -> {
 							if (!MediaController.getInstance().isMessagePaused()) {
 								MediaController.getInstance().pauseMessage(MediaController.getInstance().getPlayingMessageObject());
@@ -4859,26 +4876,26 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 								if (!bluetoothScoActive) {
 									needSwitchToBluetoothAfterScoActivates = true;
 									try {
-										am.startBluetoothSco();
+										vam.startBluetooth();
 									} catch (Throwable e) {
 										FileLog.e(e);
 									}
 								} else {
-									am.setBluetoothScoOn(true);
+									vam.setBluetoothOn(true);
 									vam.setSpeakerphoneOn(false);
 								}
 								break;
 							case AUDIO_ROUTE_EARPIECE:
-								am.setBluetoothScoOn(false);
+								vam.setBluetoothOn(false);
 								vam.setSpeakerphoneOn(false);
 								break;
 							case AUDIO_ROUTE_SPEAKER:
-								am.setBluetoothScoOn(false);
+								vam.setBluetoothOn(false);
 								vam.setSpeakerphoneOn(true);
 								break;
 						}
 					} else if (isBluetoothHeadsetConnected()) {
-						am.setBluetoothScoOn(speakerphoneStateToSet);
+						vam.setBluetoothOn(speakerphoneStateToSet);
 					} else {
 						vam.setSpeakerphoneOn(speakerphoneStateToSet);
 						if (speakerphoneStateToSet) {
@@ -4934,9 +4951,8 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			return;
 		}
 		if (event.sensor.getType() == Sensor.TYPE_PROXIMITY) {
-			AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
 			VoipAudioManager vam = VoipAudioManager.get();
-			if (audioRouteToSet != AUDIO_ROUTE_EARPIECE || isHeadsetPlugged || vam.isSpeakerphoneOn() || (isBluetoothHeadsetConnected() && am.isBluetoothScoOn())) {
+			if (audioRouteToSet != AUDIO_ROUTE_EARPIECE || isHeadsetPlugged || vam.isSpeakerphoneOn() || (isBluetoothHeadsetConnected() && vam.isBluetoothOn())) {
 				return;
 			}
 			boolean newIsNear = event.values[0] < Math.min(event.sensor.getMaximumRange(), 3);
@@ -4998,6 +5014,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 		}
 		isBtHeadsetConnected = connected;
 		final AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+		final VoipAudioManager vam = VoipAudioManager.get();
 		if (connected && !isRinging() && currentState != 0) {
 			if (bluetoothScoActive) {
 				if (BuildVars.LOGS_ENABLED) {
@@ -5005,7 +5022,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 				}
 				if (!hasRtmpStream()) {
 					am.setSpeakerphoneOn(false);
-					am.setBluetoothScoOn(true);
+					vam.setBluetoothOn(true);
 				}
 			} else {
 				if (BuildVars.LOGS_ENABLED) {
@@ -5015,7 +5032,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 					needSwitchToBluetoothAfterScoActivates = true;
 					AndroidUtilities.runOnUIThread(() -> {
 						try {
-							am.startBluetoothSco();
+							vam.startBluetooth();
 						} catch (Throwable ignore) {
 
 						}
@@ -5026,7 +5043,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			bluetoothScoActive = false;
 			bluetoothScoConnecting = false;
 
-			am.setBluetoothScoOn(false);
+			vam.setBluetoothOn(false);
 		}
 		for (StateListener l : stateListeners) {
 			l.onAudioSettingsChanged();
@@ -5418,7 +5435,6 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 		}
 	}
 
-	@Override
 	public void onConnectionStateChanged(int newState, boolean inTransition) {
 		AndroidUtilities.runOnUIThread(() -> {
 			if (convertingVoip != null) {
@@ -5488,7 +5504,6 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 		Utilities.globalQueue.postRunnable(() -> soundPool.play(spAllowTalkId, 0.5f, 0.5f, 0, 0, 1));
 	}
 
-	@Override
 	public void onSignalBarCountChanged(int newCount) {
 		AndroidUtilities.runOnUIThread(() -> {
 			signalBarCount = newCount;
@@ -5500,8 +5515,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 	}
 
 	public boolean isBluetoothOn() {
-		final AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
-		return am.isBluetoothScoOn();
+		return VoipAudioManager.get().isBluetoothOn();
 	}
 
 	public boolean isBluetoothWillOn() {

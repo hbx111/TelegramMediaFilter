@@ -196,7 +196,10 @@ public class SimpleTextView extends View implements Drawable.Callback {
     }
 
     public void setTextSize(int sizeInDp) {
-        int newSize = dp(sizeInDp);
+        setTextSizePx(dp(sizeInDp));
+    }
+
+    public void setTextSizePx(int newSize) {
         if (newSize == textPaint.getTextSize()) {
             return;
         }
@@ -521,6 +524,7 @@ public class SimpleTextView extends View implements Drawable.Callback {
         if (widthWrapContent) {
 //            textWidth = (int) Math.ceil(layout.getLineWidth(0));
             width = Math.min(width, getPaddingLeft() + textWidth + getPaddingRight() + minusWidth + (leftDrawableOutside && leftDrawable != null ? leftDrawable.getIntrinsicWidth() + drawablePadding : 0) + (rightDrawableOutside && rightDrawable != null ? rightDrawable.getIntrinsicWidth() + drawablePadding : 0) + (rightDrawableOutside && rightDrawable2 != null ? rightDrawable2.getIntrinsicWidth() + drawablePadding : 0));
+            width = Math.max(width, 0);
         }
         setMeasuredDimension(width, finalHeight);
 
@@ -1165,6 +1169,13 @@ public class SimpleTextView extends View implements Drawable.Callback {
         return getPaint().measureText(getText().toString())
                 + getSideDrawablesSize()
                 - (leftDrawable != null || rightDrawable != null || rightDrawable2 != null ? drawablePadding : 0);
+    }
+
+    public float getExactWidthIncludeDrawables() {
+        return getExactWidth()
+            + (leftDrawable != null ? leftDrawable.getIntrinsicWidth() : 0)
+            + (rightDrawable != null ? rightDrawable.getIntrinsicWidth() : 0)
+            + (rightDrawable2 != null ? rightDrawable2.getIntrinsicWidth() : 0);
     }
 
     private void drawLayout(Canvas canvas) {
