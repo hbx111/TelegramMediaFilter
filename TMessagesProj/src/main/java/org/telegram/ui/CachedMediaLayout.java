@@ -97,6 +97,21 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
     BasePlaceProvider placeProvider;
     private int bottomPadding;
 
+    private boolean mediaZoomEnabled;
+    private boolean mediaPinchActive;
+    private boolean mediaColumnsAnimating;
+    private boolean mediaTouchBlocked;
+    private int mediaColumnsCount = 3;
+    private int mediaColumnsMin = 2;
+    private int mediaColumnsMax = 6;
+    private int mediaZoomAnimationId;
+    private float mediaPinchStartDistance;
+    private MediaColumnsCountListener mediaColumnsCountListener;
+
+    public interface MediaColumnsCountListener {
+        void onMediaColumnsCountChanged(int columnsCount);
+    }
+
     public CachedMediaLayout(@NonNull Context context, BaseFragment parentFragment) {
         super(context);
         this.parentFragment = parentFragment;
@@ -145,7 +160,22 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
 
             @Override
             public View createView(int viewType) {
-                RecyclerListView recyclerListView = new RecyclerListView(context);
+                RecyclerListView recyclerListView = new RecyclerListView(context) {
+                    @Override
+                    public boolean dispatchTouchEvent(MotionEvent ev) {
+                        boolean wasPinching = mediaPinchActive;
+                        if (handleMediaZoomTouch(this, ev)) {
+                            if (!wasPinching && mediaPinchActive) {
+                                MotionEvent cancelEvent = MotionEvent.obtain(ev);
+                                cancelEvent.setAction(MotionEvent.ACTION_CANCEL);
+                                super.dispatchTouchEvent(cancelEvent);
+                                cancelEvent.recycle();
+                            }
+                            return true;
+                        }
+                        return super.dispatchTouchEvent(ev);
+                    }
+                };
 
                 DefaultItemAnimator itemAnimator = (DefaultItemAnimator) recyclerListView.getItemAnimator();
                 itemAnimator.setDelayAnimations(false);
@@ -250,7 +280,7 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
                 RecyclerListView recyclerListView = (RecyclerListView) view;
                 recyclerListView.setAdapter(pages.get(position).adapter);
                 if (pages.get(position).type == PAGE_TYPE_MEDIA || pages.get(position).type == PAGE_TYPE_STORIES) {
-                    recyclerListView.setLayoutManager(new GridLayoutManager(view.getContext(), 3));
+                    recyclerListView.setLayoutManager(new GridLayoutManager(view.getContext(), mediaColumnsCount));
                 } else {
                     recyclerListView.setLayoutManager(new LinearLayoutManager(view.getContext()));
                 }
@@ -366,6 +396,198 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
         update();
     }
 
+    public void setMediaZoomEnabled(boolean enabled) {
+        mediaZoomEnabled = enabled;
+        if (!enabled) {
+            mediaPinchActive = false;
+            mediaColumnsAnimating = false;
+        }
+    }
+
+    public void setMediaColumnsCountRange(int minColumns, int maxColumns) {
+        if (minColumns < 1 || maxColumns < minColumns) {
+            throw new IllegalArgumentException("Invalid media columns range");
+        }
+        mediaColumnsMin = minColumns;
+        mediaColumnsMax = maxColumns;
+        setMediaColumnsCount(mediaColumnsCount);
+    }
+
+    public int getMediaColumnsCount() {
+        return mediaColumnsCount;
+    }
+
+    public boolean canZoomMediaIn() {
+        return mediaZoomEnabled && mediaColumnsCount > mediaColumnsMin;
+    }
+
+    public boolean canZoomMediaOut() {
+        return mediaZoomEnabled && mediaColumnsCount < mediaColumnsMax;
+    }
+
+    public void setMediaColumnsCount(int columnsCount) {
+        int clampedColumnsCount = Math.max(mediaColumnsMin, Math.min(mediaColumnsMax, columnsCount));
+        if (mediaColumnsCount == clampedColumnsCount) {
+            return;
+        }
+        changeMediaColumnsCount(clampedColumnsCount, getMediaListView(), Float.NaN, Float.NaN, false);
+    }
+
+    public boolean zoomMediaIn() {
+        if (!canZoomMediaIn()) {
+            return false;
+        }
+        RecyclerListView listView = getMediaListView();
+        float focusX = listView == null ? Float.NaN : listView.getWidth() / 2f;
+        float focusY = listView == null ? Float.NaN : listView.getHeight() / 2f;
+        changeMediaColumnsCount(mediaColumnsCount - 1, listView, focusX, focusY, true);
+        return true;
+    }
+
+    public boolean zoomMediaOut() {
+        if (!canZoomMediaOut()) {
+            return false;
+        }
+        RecyclerListView listView = getMediaListView();
+        float focusX = listView == null ? Float.NaN : listView.getWidth() / 2f;
+        float focusY = listView == null ? Float.NaN : listView.getHeight() / 2f;
+        changeMediaColumnsCount(mediaColumnsCount + 1, listView, focusX, focusY, true);
+        return true;
+    }
+
+    public void setMediaColumnsCountListener(MediaColumnsCountListener listener) {
+        mediaColumnsCountListener = listener;
+    }
+
+    private RecyclerListView getMediaListView() {
+        for (View view : viewPagerFixed.getViewPages()) {
+            if (view instanceof RecyclerListView && view.getTag() instanceof Integer && (Integer) view.getTag() == PAGE_TYPE_MEDIA) {
+                return (RecyclerListView) view;
+            }
+        }
+        RecyclerListView currentListView = getListView();
+        if (currentListView != null && currentListView.getTag() instanceof Integer && (Integer) currentListView.getTag() == PAGE_TYPE_MEDIA) {
+            return currentListView;
+        }
+        return null;
+    }
+
+    private boolean handleMediaZoomTouch(RecyclerListView listView, MotionEvent event) {
+        if (!mediaZoomEnabled || !(listView.getTag() instanceof Integer) || (Integer) listView.getTag() != PAGE_TYPE_MEDIA) {
+            return false;
+        }
+
+        int action = event.getActionMasked();
+        if (mediaTouchBlocked) {
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                mediaTouchBlocked = false;
+            }
+            return true;
+        }
+        if (action == MotionEvent.ACTION_POINTER_DOWN && event.getPointerCount() >= 2) {
+            mediaPinchActive = true;
+            mediaPinchStartDistance = getPinchDistance(event);
+            listView.stopScroll();
+            listView.getParent().requestDisallowInterceptTouchEvent(true);
+            return true;
+        }
+
+        if (mediaPinchActive) {
+            if (action == MotionEvent.ACTION_MOVE && event.getPointerCount() >= 2) {
+                float distance = getPinchDistance(event);
+                if (mediaPinchStartDistance > 0) {
+                    float scale = distance / mediaPinchStartDistance;
+                    float focusX = (event.getX(0) + event.getX(1)) / 2f;
+                    float focusY = (event.getY(0) + event.getY(1)) / 2f;
+                    if (scale >= 1.18f) {
+                        if (canZoomMediaIn()) {
+                            changeMediaColumnsCount(mediaColumnsCount - 1, listView, focusX, focusY, true);
+                        }
+                        mediaPinchStartDistance = distance;
+                    } else if (scale <= 0.85f) {
+                        if (canZoomMediaOut()) {
+                            changeMediaColumnsCount(mediaColumnsCount + 1, listView, focusX, focusY, true);
+                        }
+                        mediaPinchStartDistance = distance;
+                    }
+                }
+                return true;
+            }
+            if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                mediaPinchActive = false;
+                listView.getParent().requestDisallowInterceptTouchEvent(false);
+            }
+            return true;
+        }
+
+        if (mediaColumnsAnimating) {
+            mediaTouchBlocked = action == MotionEvent.ACTION_DOWN;
+            return true;
+        }
+        return false;
+    }
+
+    private float getPinchDistance(MotionEvent event) {
+        return (float) Math.hypot(event.getX(1) - event.getX(0), event.getY(1) - event.getY(0));
+    }
+
+    private void changeMediaColumnsCount(int columnsCount, RecyclerListView listView, float focusX, float focusY, boolean animated) {
+        int clampedColumnsCount = Math.max(mediaColumnsMin, Math.min(mediaColumnsMax, columnsCount));
+        if (clampedColumnsCount == mediaColumnsCount) {
+            return;
+        }
+
+        int oldColumnsCount = mediaColumnsCount;
+        int anchorPosition = RecyclerView.NO_POSITION;
+        int anchorOffset = 0;
+        if (listView != null && listView.getLayoutManager() instanceof GridLayoutManager) {
+            View anchorView = null;
+            if (!Float.isNaN(focusX) && !Float.isNaN(focusY)) {
+                anchorView = listView.findChildViewUnder(focusX, focusY);
+            }
+            if (anchorView == null && listView.getChildCount() > 0) {
+                anchorView = listView.getChildAt(0);
+            }
+            if (anchorView != null) {
+                anchorPosition = listView.getChildAdapterPosition(anchorView);
+                anchorOffset = anchorView.getTop() - listView.getPaddingTop();
+            }
+        }
+
+        mediaColumnsCount = clampedColumnsCount;
+        if (listView != null && listView.getLayoutManager() instanceof GridLayoutManager) {
+            GridLayoutManager layoutManager = (GridLayoutManager) listView.getLayoutManager();
+            layoutManager.setSpanCount(mediaColumnsCount);
+            if (anchorPosition != RecyclerView.NO_POSITION) {
+                layoutManager.scrollToPositionWithOffset(anchorPosition, anchorOffset);
+            }
+            listView.requestLayout();
+            if (animated) {
+                animateMediaColumnsChange(listView, mediaColumnsCount < oldColumnsCount, focusX, focusY);
+            }
+        }
+        if (mediaColumnsCountListener != null) {
+            mediaColumnsCountListener.onMediaColumnsCountChanged(mediaColumnsCount);
+        }
+    }
+
+    private void animateMediaColumnsChange(RecyclerListView listView, boolean zoomingIn, float focusX, float focusY) {
+        int animationId = ++mediaZoomAnimationId;
+        mediaColumnsAnimating = true;
+        listView.animate().cancel();
+        listView.setPivotX(Float.isNaN(focusX) ? listView.getWidth() / 2f : focusX);
+        listView.setPivotY(Float.isNaN(focusY) ? listView.getHeight() / 2f : focusY);
+        listView.setAlpha(0.72f);
+        listView.setScaleX(zoomingIn ? 0.94f : 1.06f);
+        listView.setScaleY(zoomingIn ? 0.94f : 1.06f);
+        listView.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(140).start();
+        listView.postDelayed(() -> {
+            if (animationId == mediaZoomAnimationId) {
+                mediaColumnsAnimating = false;
+            }
+        }, 160);
+    }
+
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         //itemSize = ((MeasureSpec.getSize(widthMeasureSpec) - AndroidUtilities.dp(6 * 2) - AndroidUtilities.dp(5 * 2)) / 3);
@@ -396,7 +618,7 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
                 }
             }
         }
-        if (pages.size() == 1 && cacheModel.isDialog) {
+        if (pages.size() == 1) {
             tabs.setVisibility(View.GONE);
             ((MarginLayoutParams) viewPagerFixed.getLayoutParams()).topMargin = 0;
             ((MarginLayoutParams) divider.getLayoutParams()).topMargin = 0;
@@ -705,7 +927,16 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
             CacheModel.FileInfo file = itemInners.get(position).file;
             boolean animated = file == cell.getTag();
             cell.setTag(file);
-            int size = (int) Math.max(100, AndroidUtilities.getRealScreenSize().x / AndroidUtilities.density);
+            int size;
+            if (mediaZoomEnabled) {
+                int gridWidth = getMeasuredWidth();
+                if (gridWidth <= 0) {
+                    gridWidth = AndroidUtilities.getRealScreenSize().x;
+                }
+                size = Math.max(64, Math.round(gridWidth / AndroidUtilities.density / Math.max(1, mediaColumnsCount)));
+            } else {
+                size = (int) Math.max(100, AndroidUtilities.getRealScreenSize().x / AndroidUtilities.density);
+            }
             if (isStories) {
                 boolean isVideo = file.file.getAbsolutePath().endsWith(".mp4");
                 if (isVideo) {
@@ -717,7 +948,8 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
                 cell.isStory = true;
                 cell.setVideoText(AndroidUtilities.formatFileSize(file.size), true);
             } else if (file.type == TYPE_VIDEOS) {
-                cell.imageReceiver.setImage(ImageLocation.getForPath("vthumb://" + 0 + ":" + file.file.getAbsolutePath()), size + "_" + size, thumb, null, null, 0);
+                String thumbnailPrefix = mediaZoomEnabled ? "vthumbcache://" : "vthumb://";
+                cell.imageReceiver.setImage(ImageLocation.getForPath(thumbnailPrefix + 0 + ":" + file.file.getAbsolutePath()), size + "_" + size, thumb, null, null, 0);
                 cell.setVideoText(AndroidUtilities.formatFileSize(file.size), true);
             } else {
                 cell.imageReceiver.setImage(ImageLocation.getForPath("thumb://" + 0 + ":" + file.file.getAbsolutePath()), size + "_" + size, thumb, null, null, 0);

@@ -1420,6 +1420,11 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
         interceptedByChild = false;
     }
 
+    public void finishLongPressTracking() {
+        longPressCalled = false;
+        cancelLongPress();
+    }
+
     private boolean resetSelectorOnChanged = true;
     public void setResetSelectorOnChanged(boolean value) {
         resetSelectorOnChanged = value;

@@ -852,6 +852,8 @@ public class ImageLoader {
     }
 
     private class CacheOutTask implements Runnable {
+        private static final int LOCAL_VIDEO_THUMBNAIL_CACHE_SIZE = 512;
+
         private Thread runningThread;
         private final Object sync = new Object();
 
@@ -860,6 +862,68 @@ public class ImageLoader {
 
         public CacheOutTask(CacheImage image) {
             cacheImage = image;
+        }
+
+        private File getLocalVideoThumbnailCacheFile(File videoFile) {
+            File cacheDirectory = FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE);
+            if (cacheDirectory == null || videoFile == null) {
+                return null;
+            }
+            String fingerprint = videoFile.getAbsolutePath() + "_" + videoFile.length() + "_" + videoFile.lastModified();
+            return new File(cacheDirectory, "vthumb_" + Utilities.MD5(fingerprint) + ".jpg");
+        }
+
+        private Bitmap loadLocalVideoThumbnail(File videoFile) {
+            File thumbnailFile = getLocalVideoThumbnailCacheFile(videoFile);
+            if (thumbnailFile == null || !thumbnailFile.exists()) {
+                return null;
+            }
+            try {
+                Bitmap bitmap = BitmapFactory.decodeFile(thumbnailFile.getAbsolutePath());
+                if (bitmap == null) {
+                    thumbnailFile.delete();
+                }
+                return bitmap;
+            } catch (Throwable e) {
+                thumbnailFile.delete();
+                FileLog.e(e);
+                return null;
+            }
+        }
+
+        private void saveLocalVideoThumbnail(File videoFile, Bitmap bitmap) {
+            File thumbnailFile = getLocalVideoThumbnailCacheFile(videoFile);
+            if (thumbnailFile == null || thumbnailFile.exists() || bitmap == null || bitmap.isRecycled()) {
+                return;
+            }
+
+            Bitmap outputBitmap = bitmap;
+            File tempFile = new File(thumbnailFile.getParentFile(), thumbnailFile.getName() + ".tmp");
+            try {
+                int width = bitmap.getWidth();
+                int height = bitmap.getHeight();
+                float scale = Math.max(width, height) / (float) LOCAL_VIDEO_THUMBNAIL_CACHE_SIZE;
+                if (scale > 1f) {
+                    outputBitmap = Bitmaps.createScaledBitmap(bitmap, Math.max(1, Math.round(width / scale)), Math.max(1, Math.round(height / scale)), true);
+                }
+
+                tempFile.delete();
+                boolean compressed;
+                try (FileOutputStream stream = new FileOutputStream(tempFile)) {
+                    compressed = outputBitmap.compress(Bitmap.CompressFormat.JPEG, 82, stream);
+                    stream.flush();
+                }
+                if (!compressed || !tempFile.renameTo(thumbnailFile)) {
+                    tempFile.delete();
+                }
+            } catch (Throwable e) {
+                tempFile.delete();
+                FileLog.e(e);
+            } finally {
+                if (outputBitmap != bitmap) {
+                    outputBitmap.recycle();
+                }
+            }
         }
 
         @Override
@@ -1177,6 +1241,7 @@ public class ImageLoader {
                 boolean canDeleteFile = true;
 
                 String mediaThumbPath = null;
+                boolean cacheLocalVideoThumbnail = false;
                 if (cacheImage.imageLocation.path != null) {
                     String location = cacheImage.imageLocation.path;
                     if (location.startsWith("thumb://")) {
@@ -1185,6 +1250,14 @@ public class ImageLoader {
                             mediaId = Long.parseLong(location.substring(8, idx));
                             mediaIsVideo = false;
                             mediaThumbPath = location.substring(idx + 1);
+                        }
+                        canDeleteFile = false;
+                    } else if (location.startsWith("vthumbcache://")) {
+                        int idx = location.indexOf(":", 14);
+                        if (idx >= 0) {
+                            mediaId = Long.parseLong(location.substring(14, idx));
+                            mediaIsVideo = true;
+                            cacheLocalVideoThumbnail = true;
                         }
                         canDeleteFile = false;
                     } else if (location.startsWith("vthumb://")) {
@@ -1453,9 +1526,20 @@ public class ImageLoader {
                         if (mediaId != null && mediaThumbPath == null) {
                             if (mediaIsVideo) {
                                 if (mediaId == 0) {
-                                    AnimatedFileDrawable fileDrawable = new AnimatedFileDrawable(cacheFileFinal, true, 0, 0, null, null, null, 0, 0, true, null);
-                                    image = fileDrawable.getFrameAtTime(0, true);
-                                    fileDrawable.recycle();
+                                    if (cacheLocalVideoThumbnail) {
+                                        image = loadLocalVideoThumbnail(cacheFileFinal);
+                                    }
+                                    if (image == null) {
+                                        AnimatedFileDrawable fileDrawable = new AnimatedFileDrawable(cacheFileFinal, true, 0, 0, null, null, null, 0, 0, true, null);
+                                        image = fileDrawable.getFrameAtTime(0, true);
+                                        fileDrawable.recycle();
+                                        if (image == null) {
+                                            image = SendMessagesHelper.createVideoThumbnail(cacheFileFinal.getAbsolutePath(), MediaStore.Video.Thumbnails.MINI_KIND);
+                                        }
+                                        if (cacheLocalVideoThumbnail && image != null) {
+                                            saveLocalVideoThumbnail(cacheFileFinal, image);
+                                        }
+                                    }
                                 } else {
                                     image = MediaStore.Video.Thumbnails.getThumbnail(ApplicationLoader.applicationContext.getContentResolver(), mediaId, MediaStore.Video.Thumbnails.MINI_KIND, opts);
                                 }
@@ -3034,6 +3118,11 @@ public class ImageLoader {
                         onlyCache = true;
                         if (location.startsWith("thumb://")) {
                             int idx = location.indexOf(":", 8);
+                            if (idx >= 0) {
+                                cacheFile = new File(location.substring(idx + 1));
+                            }
+                        } else if (location.startsWith("vthumbcache://")) {
+                            int idx = location.indexOf(":", 14);
                             if (idx >= 0) {
                                 cacheFile = new File(location.substring(idx + 1));
                             }
