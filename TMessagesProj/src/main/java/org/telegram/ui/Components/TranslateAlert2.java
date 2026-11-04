@@ -387,9 +387,7 @@ public class TranslateAlert2 extends BottomSheet implements NotificationCenter.N
                     adapter.updateMainView(textViewContainer);
                 } else if (firstTranslation) {
                     dismiss();
-                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_ERROR, LocaleController.getString(R.string.TranslationFailedAlert2));
                 } else {
-                    BulletinFactory.of((FrameLayout) containerView, resourcesProvider).createErrorBulletin(LocaleController.getString(R.string.TranslationFailedAlert2)).show();
                     headerView.toLanguageTextView.setText(languageName(toLanguage = prevToLanguage));
                     adapter.updateMainView(textViewContainer);
                 }
@@ -430,9 +428,7 @@ public class TranslateAlert2 extends BottomSheet implements NotificationCenter.N
                     adapter.updateMainView(textViewContainer);
                 } else if (firstTranslation) {
                     dismiss();
-                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_ERROR, LocaleController.getString(R.string.TranslationFailedAlert2));
                 } else {
-                    BulletinFactory.of((FrameLayout) containerView, resourcesProvider).createErrorBulletin(LocaleController.getString(R.string.TranslationFailedAlert2)).show();
                     headerView.toLanguageTextView.setText(languageName(toLanguage = prevToLanguage));
                     adapter.updateMainView(textViewContainer);
                 }
@@ -480,9 +476,7 @@ public class TranslateAlert2 extends BottomSheet implements NotificationCenter.N
 //                }
                 if (firstTranslation) {
                     dismiss();
-                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_ERROR, LocaleController.getString(rateLimit ? R.string.TranslationFailedAlert1 : R.string.TranslationFailedAlert2));
                 } else {
-                    BulletinFactory.of((FrameLayout) containerView, resourcesProvider).createErrorBulletin(LocaleController.getString(rateLimit ? R.string.TranslationFailedAlert1 : R.string.TranslationFailedAlert2)).show();
                     headerView.toLanguageTextView.setText(languageName(toLanguage = prevToLanguage));
                     adapter.updateMainView(textViewContainer);
                 }
@@ -875,6 +869,7 @@ public class TranslateAlert2 extends BottomSheet implements NotificationCenter.N
                 }
             }
         }
+        restoreHashtagEntities(source, received);
         if (source != null && source.text != null && !source.entities.isEmpty()) {
             HashMap<String, ArrayList<Emoji.EmojiSpanRange>> srcIndexes = groupEmojiRanges(source.text);
             HashMap<String, ArrayList<Emoji.EmojiSpanRange>> destIndexes = groupEmojiRanges(received.text);
@@ -932,6 +927,99 @@ public class TranslateAlert2 extends BottomSheet implements NotificationCenter.N
             }
         }
         return received;
+    }
+
+    private static void restoreHashtagEntities(TLRPC.TL_textWithEntities source, TLRPC.TL_textWithEntities received) {
+        if (received == null || TextUtils.isEmpty(received.text)) {
+            return;
+        }
+        if (received.entities == null) {
+            received.entities = new ArrayList<>();
+        }
+
+        SpannableStringBuilder parsedText = new SpannableStringBuilder(received.text);
+        MessageObject.addUrlsByPattern(false, parsedText, false, 0, 0, true);
+        URLSpan[] spans = parsedText.getSpans(0, parsedText.length(), URLSpan.class);
+        for (int i = 0; i < spans.length; ++i) {
+            URLSpan span = spans[i];
+            int start = parsedText.getSpanStart(span);
+            int end = parsedText.getSpanEnd(span);
+            String url = span.getURL();
+            if (start < 0 || end <= start || end > received.text.length() || TextUtils.isEmpty(url) || url.charAt(0) != '#') {
+                continue;
+            }
+            addHashtagEntityIfAllowed(received, start, end);
+        }
+
+        if (source == null || TextUtils.isEmpty(source.text) || source.entities == null || source.entities.isEmpty()) {
+            return;
+        }
+        ArrayList<TLRPC.MessageEntity> sourceHashtags = new ArrayList<>();
+        for (int i = 0; i < source.entities.size(); ++i) {
+            TLRPC.MessageEntity entity = source.entities.get(i);
+            if (entity instanceof TLRPC.TL_messageEntityHashtag) {
+                sourceHashtags.add(entity);
+            }
+        }
+        sourceHashtags.sort((a, b) -> Integer.compare(a.offset, b.offset));
+        HashMap<String, Integer> occurrences = new HashMap<>();
+        for (int i = 0; i < sourceHashtags.size(); ++i) {
+            TLRPC.MessageEntity entity = sourceHashtags.get(i);
+            if (entity.offset < 0 || entity.length <= 0 || entity.offset + entity.length > source.text.length()) {
+                continue;
+            }
+            String hashtag = source.text.substring(entity.offset, entity.offset + entity.length);
+            if (TextUtils.isEmpty(hashtag) || hashtag.charAt(0) != '#') {
+                continue;
+            }
+            Integer previousOccurrences = occurrences.get(hashtag);
+            int occurrence = previousOccurrences == null ? 0 : previousOccurrences;
+            occurrences.put(hashtag, occurrence + 1);
+            int start = findTextOccurrence(received.text, hashtag, occurrence);
+            if (start >= 0) {
+                addHashtagEntityIfAllowed(received, start, start + hashtag.length());
+            }
+        }
+    }
+
+    private static int findTextOccurrence(String text, String value, int occurrence) {
+        int start = -1;
+        int fromIndex = 0;
+        for (int i = 0; i <= occurrence; ++i) {
+            start = text.indexOf(value, fromIndex);
+            if (start < 0) {
+                return -1;
+            }
+            fromIndex = start + value.length();
+        }
+        return start;
+    }
+
+    private static void addHashtagEntityIfAllowed(TLRPC.TL_textWithEntities textWithEntities, int start, int end) {
+        for (int i = 0; i < textWithEntities.entities.size(); ++i) {
+            TLRPC.MessageEntity entity = textWithEntities.entities.get(i);
+            if (entity == null || entity.length <= 0 || start >= entity.offset + entity.length || end <= entity.offset) {
+                continue;
+            }
+            if (entity instanceof TLRPC.TL_messageEntityHashtag ||
+                entity instanceof TLRPC.TL_messageEntityCashtag ||
+                entity instanceof TLRPC.TL_messageEntityBotCommand ||
+                entity instanceof TLRPC.TL_messageEntityMention ||
+                entity instanceof TLRPC.TL_messageEntityMentionName ||
+                entity instanceof TLRPC.TL_inputMessageEntityMentionName ||
+                entity instanceof TLRPC.TL_messageEntityUrl ||
+                entity instanceof TLRPC.TL_messageEntityTextUrl ||
+                entity instanceof TLRPC.TL_messageEntityEmail ||
+                entity instanceof TLRPC.TL_messageEntityPhone ||
+                entity instanceof TLRPC.TL_messageEntityCode ||
+                entity instanceof TLRPC.TL_messageEntityPre) {
+                return;
+            }
+        }
+        TLRPC.TL_messageEntityHashtag hashtag = new TLRPC.TL_messageEntityHashtag();
+        hashtag.offset = start;
+        hashtag.length = end - start;
+        textWithEntities.entities.add(hashtag);
     }
 
     private static HashMap<String, ArrayList<Emoji.EmojiSpanRange>> groupEmojiRanges(CharSequence text) {
