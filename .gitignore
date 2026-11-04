@@ -14,3 +14,8 @@ TMessagesProj_AppHockeyApp/afat/
 TMessagesProj_AppStandalone/afat/
 TMessagesProj_AppHuawei/afat/
 TMessagesProj/jni/ffmpeg/build_android
+
+# 本地构建日志与产物
+/*.log
+*.apk
+*.aab
