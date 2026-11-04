@@ -138,6 +138,10 @@ android {
         minSdkVersion 23
         targetSdkVersion 36
 
+        // 应用凭证从 local.properties 读取（该文件不入库）；缺省回退到 Telegram 官方测试凭证。
+        buildConfigField "int", "APP_ID", getProps("APP_ID") ?: "4"
+        buildConfigField "String", "APP_HASH", "\"" + (getProps("APP_HASH") ?: "014b35b6184100b085b0d0572f9b5103") + "\""
+
         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
 
         multiDexEnabled true
