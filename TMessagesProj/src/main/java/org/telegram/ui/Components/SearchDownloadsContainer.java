@@ -7,6 +7,7 @@ import android.graphics.Canvas;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextUtils;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -39,6 +40,8 @@ import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Cells.GraySectionCell;
 import org.telegram.ui.Cells.SharedAudioCell;
 import org.telegram.ui.Cells.SharedDocumentCell;
+import org.telegram.ui.Cells.TextCell;
+import org.telegram.ui.DownloadedVideosActivity;
 import org.telegram.ui.FilteredSearchView;
 import org.telegram.ui.PhotoViewer;
 import org.telegram.ui.PremiumPreviewFragment;
@@ -51,22 +54,35 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
     private final FlickerLoadingView loadingView;
     StickerEmptyView emptyView;
     public final @NonNull RecyclerListView recyclerListView;
+    private ScrollSlidingTextTabStrip downloadTabs;
     DownloadsAdapter adapter = new DownloadsAdapter();
     private final int currentAccount;
 
+    private static final int TAB_DOWNLOADING = 0;
+    private static final int TAB_COMPLETED = 1;
+    private static final int TAB_FAILED = 2;
+    private static final int TABS_HEIGHT_DP = 44;
+    private int selectedDownloadTab = TAB_DOWNLOADING;
+
     ArrayList<MessageObject> currentLoadingFiles = new ArrayList<>();
     ArrayList<MessageObject> recentLoadingFiles = new ArrayList<>();
+    ArrayList<MessageObject> failedLoadingFiles = new ArrayList<>();
 
     ArrayList<MessageObject> currentLoadingFilesTmp = new ArrayList<>();
     ArrayList<MessageObject> recentLoadingFilesTmp = new ArrayList<>();
+    ArrayList<MessageObject> failedLoadingFilesTmp = new ArrayList<>();
 
     int rowCount;
+    int downloadedVideosRow = -1;
     int downloadingFilesHeader = -1;
     int downloadingFilesStartRow = -1;
     int downloadingFilesEndRow = -1;
     int recentFilesHeader = -1;
     int recentFilesStartRow = -1;
     int recentFilesEndRow = -1;
+    int failedFilesHeader = -1;
+    int failedFilesStartRow = -1;
+    int failedFilesEndRow = -1;
 
     Activity parentActivity;
     BaseFragment parentFragment;
@@ -80,6 +96,17 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
     RecyclerItemsEnterAnimator itemsEnterAnimator;
 
     boolean checkingFilesExist;
+
+    private final Runnable downloadStatusRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!isAttachedToWindow()) {
+                return;
+            }
+            refreshVisibleDownloadStatuses();
+            AndroidUtilities.runOnUIThread(this, 1000);
+        }
+    };
 
     public SearchDownloadsContainer(BaseFragment fragment, int currentAccount) {
         super(fragment.getParentActivity());
@@ -118,6 +145,10 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
         recyclerListView.setItemAnimator(defaultItemAnimator);
 
         recyclerListView.setOnItemClickListener((view, position) -> {
+            if (position == downloadedVideosRow) {
+                parentFragment.presentFragment(new DownloadedVideosActivity());
+                return;
+            }
             MessageObject messageObject = adapter.getMessage(position);
             if (messageObject == null) {
                 return;
@@ -130,6 +161,23 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
                 if (!uiCallback.actionModeShowing()) {
                     adapter.notifyItemRangeChanged(0, adapter.getItemCount());
                 }
+                return;
+            }
+
+            DownloadController downloadController = DownloadController.getInstance(currentAccount);
+            if (selectedDownloadTab == TAB_DOWNLOADING) {
+                if (FileLoader.getInstance(currentAccount).isLoadingFile(messageObject.getFileName())) {
+                    downloadController.pauseDownload(messageObject);
+                } else {
+                    downloadController.resumeDownload(messageObject);
+                }
+                update(true);
+                return;
+            } else if (selectedDownloadTab == TAB_FAILED) {
+                downloadController.retryDownload(messageObject);
+                selectedDownloadTab = TAB_DOWNLOADING;
+                downloadTabs.setInitialTabId(TAB_DOWNLOADING);
+                update(false);
                 return;
             }
 
@@ -209,6 +257,32 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
         addView(emptyView);
         recyclerListView.setEmptyView(emptyView);
 
+        downloadTabs = new ScrollSlidingTextTabStrip(getContext());
+        downloadTabs.setUseSameWidth(true);
+        downloadTabs.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+        downloadTabs.setColors(Theme.key_profile_tabSelectedLine, Theme.key_profile_tabSelectedText, Theme.key_profile_tabText, Theme.key_profile_tabSelector);
+        downloadTabs.addTextTab(TAB_DOWNLOADING, LocaleController.getString(R.string.Downloading));
+        downloadTabs.addTextTab(TAB_COMPLETED, "\u5df2\u5b8c\u6210");
+        downloadTabs.addTextTab(TAB_FAILED, "\u5931\u8d25");
+        downloadTabs.setInitialTabId(selectedDownloadTab);
+        downloadTabs.finishAddingTabs();
+        downloadTabs.setDelegate(new ScrollSlidingTextTabStrip.ScrollSlidingTabStripDelegate() {
+            @Override
+            public void onPageSelected(int id, boolean forward) {
+                if (selectedDownloadTab == id) {
+                    return;
+                }
+                selectedDownloadTab = id;
+                recyclerListView.scrollToPosition(0);
+                update(false);
+            }
+
+            @Override
+            public void onPageScrolled(float progress) {
+            }
+        });
+        addView(downloadTabs, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, TABS_HEIGHT_DP, Gravity.TOP));
+
         FileLoader.getInstance(currentAccount).getCurrentLoadingFiles(currentLoadingFiles);
     }
 
@@ -221,7 +295,7 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
         ignoreRequestLayout = doNotRequestLayout;
 
         setPadding(0, top, 0, bottom);
-        recyclerListView.setPadding(0, top, 0, bottom, doNotRequestLayout);
+        recyclerListView.setPadding(0, top + AndroidUtilities.dp(TABS_HEIGHT_DP), 0, bottom, doNotRequestLayout);
 
         MarginLayoutParams lp = null;
         lp = (MarginLayoutParams) recyclerListView.getLayoutParams();
@@ -282,231 +356,212 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
     }
 
     public void update(boolean animated) {
-        adapter.notifyItemRangeChanged(0, adapter.getItemCount());
-        if (TextUtils.isEmpty(searchQuery) || isEmptyDownloads()) {
-            if (rowCount == 0) {
-                itemsEnterAnimator.showItemsAnimated(0);
-            }
-            if (checkingFilesExist) {
-                currentLoadingFilesTmp.clear();
-                recentLoadingFilesTmp.clear();
-            }
-            FileLoader.getInstance(currentAccount).getCurrentLoadingFiles(currentLoadingFilesTmp);
-            FileLoader.getInstance(currentAccount).getRecentLoadingFiles(recentLoadingFilesTmp);
+        ArrayList<MessageObject> current = new ArrayList<>();
+        ArrayList<MessageObject> recent = new ArrayList<>();
+        ArrayList<MessageObject> failed = new ArrayList<>();
+        FileLoader.getInstance(currentAccount).getCurrentLoadingFiles(current);
+        FileLoader.getInstance(currentAccount).getRecentLoadingFiles(recent);
+        DownloadController.getInstance(currentAccount).getFailedLoadingFiles(failed);
 
-            for (int i = 0; i < currentLoadingFiles.size(); i++) {
-                currentLoadingFiles.get(i).setQuery(null);
-            }
-            for (int i = 0; i < recentLoadingFiles.size(); i++) {
-                recentLoadingFiles.get(i).setQuery(null);
-            }
+        for (int i = 0; i < current.size(); i++) {
+            current.get(i).setQuery(null);
+        }
+        for (int i = 0; i < recent.size(); i++) {
+            recent.get(i).setQuery(null);
+        }
+        for (int i = 0; i < failed.size(); i++) {
+            failed.get(i).setQuery(null);
+        }
 
-            lastQueryString = null;
-            updateListInternal(animated, currentLoadingFilesTmp, recentLoadingFilesTmp);
-            if (rowCount == 0) {
-                emptyView.showProgress(false, false);
+        if (!TextUtils.isEmpty(searchQuery)) {
+            String query = searchQuery.toLowerCase();
+            current = filterTasks(current, query);
+            recent = filterTasks(recent, query);
+            failed = filterTasks(failed, query);
+        }
+
+        int oldRowCount = rowCount;
+        updateListInternal(animated, current, recent, failed);
+        if (oldRowCount == 0 && rowCount > 0) {
+            itemsEnterAnimator.showItemsAnimated(0);
+        }
+        emptyView.showProgress(false, animated);
+        if (rowCount == 0) {
+            if (TextUtils.isEmpty(searchQuery)) {
                 emptyView.title.setText(LocaleController.getString(R.string.SearchEmptyViewDownloads));
                 emptyView.subtitle.setVisibility(View.GONE);
-            }
-            emptyView.setStickerType(9);
-        } else {
-            emptyView.setStickerType(1);
-            ArrayList<MessageObject> currentLoadingFilesTmp = new ArrayList<>();
-            ArrayList<MessageObject> recentLoadingFilesTmp = new ArrayList<>();
-
-            FileLoader.getInstance(currentAccount).getCurrentLoadingFiles(currentLoadingFilesTmp);
-            FileLoader.getInstance(currentAccount).getRecentLoadingFiles(recentLoadingFilesTmp);
-
-            String q = searchQuery.toLowerCase();
-            final boolean sameQuery = q.equals(lastQueryString);
-
-            lastQueryString = q;
-            Utilities.searchQueue.cancelRunnable(lastSearchRunnable);
-            Utilities.searchQueue.postRunnable(lastSearchRunnable = () -> {
-                ArrayList<MessageObject> currentLoadingFilesRes = new ArrayList<>();
-                ArrayList<MessageObject> recentLoadingFilesRes = new ArrayList<>();
-                for (int i = 0; i < currentLoadingFilesTmp.size(); i++) {
-                    final String filename = FileLoader.getDocumentFileName(currentLoadingFilesTmp.get(i).getDocument());
-                    if (filename != null && filename.toLowerCase().contains(q)) {
-                        final MessageObject messageObject = new MessageObject(currentAccount, currentLoadingFilesTmp.get(i).messageOwner, false, false);
-                        messageObject.mediaExists = currentLoadingFilesTmp.get(i).mediaExists;
-                        messageObject.setQuery(searchQuery);
-                        currentLoadingFilesRes.add(messageObject);
-                    }
-                }
-
-                for (int i = 0; i < recentLoadingFilesTmp.size(); i++) {
-                    final String documentName = FileLoader.getDocumentFileName(recentLoadingFilesTmp.get(i).getDocument());
-                    if (documentName != null && documentName.toLowerCase().contains(q)) {
-                        final MessageObject messageObject = new MessageObject(currentAccount, recentLoadingFilesTmp.get(i).messageOwner, false, false);
-                        messageObject.mediaExists = recentLoadingFilesTmp.get(i).mediaExists;
-                        messageObject.setQuery(searchQuery);
-                        recentLoadingFilesRes.add(messageObject);
-                    }
-                }
-                AndroidUtilities.runOnUIThread(() -> {
-                    if (q.equals(lastQueryString)) {
-                        if (rowCount == 0) {
-                            itemsEnterAnimator.showItemsAnimated(0);
-                        }
-                        updateListInternal(true, currentLoadingFilesRes, recentLoadingFilesRes);
-                        if (rowCount == 0) {
-                            emptyView.showProgress(false, true);
-
-                            emptyView.title.setText(LocaleController.getString(R.string.SearchEmptyViewTitle2));
-                            emptyView.subtitle.setVisibility(View.VISIBLE);
-                            emptyView.subtitle.setText(LocaleController.getString(R.string.SearchEmptyViewFilteredSubtitle2));
-                        }
-                    }
-                });
-
-            }, sameQuery ? 0 : 300);
-
-            this.recentLoadingFilesTmp.clear();
-            this.currentLoadingFilesTmp.clear();
-            if (!sameQuery) {
-                emptyView.showProgress(true, true);
-                updateListInternal(animated, this.currentLoadingFilesTmp, this.recentLoadingFilesTmp);
+                emptyView.setStickerType(9);
+            } else {
+                emptyView.title.setText(LocaleController.getString(R.string.SearchEmptyViewTitle2));
+                emptyView.subtitle.setVisibility(View.VISIBLE);
+                emptyView.subtitle.setText(LocaleController.getString(R.string.SearchEmptyViewFilteredSubtitle2));
+                emptyView.setStickerType(1);
             }
         }
+    }
+
+    private ArrayList<MessageObject> filterTasks(ArrayList<MessageObject> source, String query) {
+        ArrayList<MessageObject> result = new ArrayList<>();
+        for (int i = 0; i < source.size(); i++) {
+            MessageObject sourceMessage = source.get(i);
+            String fileName = FileLoader.getDocumentFileName(sourceMessage.getDocument());
+            if (fileName != null && fileName.toLowerCase().contains(query)) {
+                MessageObject copy = new MessageObject(currentAccount, sourceMessage.messageOwner, false, false);
+                copy.mediaExists = sourceMessage.mediaExists;
+                copy.attachPathExists = sourceMessage.attachPathExists;
+                copy.isDownloadingFile = true;
+                copy.setQuery(searchQuery);
+                result.add(copy);
+            }
+        }
+        return result;
     }
 
     private boolean isEmptyDownloads() {
-        return DownloadController.getInstance(currentAccount).downloadingFiles.isEmpty() && DownloadController.getInstance(currentAccount).recentDownloadingFiles.isEmpty();
+        DownloadController controller = DownloadController.getInstance(currentAccount);
+        return controller.downloadingFiles.isEmpty()
+                && controller.recentDownloadingFiles.isEmpty()
+                && controller.failedDownloadingFiles.isEmpty();
     }
 
-    private void updateListInternal(boolean animated, ArrayList<MessageObject> currentLoadingFilesTmp, ArrayList<MessageObject> recentLoadingFilesTmp) {
-        if (animated) {
-            int oldDownloadingFilesHeader = downloadingFilesHeader;
-            int oldDownloadingFilesStartRow = downloadingFilesStartRow;
-            int oldDownloadingFilesEndRow = downloadingFilesEndRow;
+    private void updateListInternal(boolean animated, ArrayList<MessageObject> current, ArrayList<MessageObject> recent, ArrayList<MessageObject> failed) {
+        updateRows(current, recent, failed);
+        adapter.notifyDataSetChanged();
+        refreshVisibleDownloadStatuses();
+    }
 
-            int oldRecentFilesHeader = recentFilesHeader;
-            int oldRecentFilesStartRow = recentFilesStartRow;
-            int oldRecentFilesEndRow = recentFilesEndRow;
-
-            int oldRowCount = rowCount;
-
-            ArrayList<MessageObject> oldDownloadingLoadingFiles = new ArrayList<>(currentLoadingFiles);
-            ArrayList<MessageObject> oldRecentLoadingFiles = new ArrayList<>(recentLoadingFiles);
-
-            updateRows(currentLoadingFilesTmp, recentLoadingFilesTmp);
-            DiffUtil.calculateDiff(new DiffUtil.Callback() {
-                @Override
-                public int getOldListSize() {
-                    return oldRowCount;
-                }
-
-                @Override
-                public int getNewListSize() {
-                    return rowCount;
-                }
-
-                @Override
-                public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-                    if (oldItemPosition >= 0 && newItemPosition >= 0) {
-                        if (oldItemPosition == oldDownloadingFilesHeader && newItemPosition == downloadingFilesHeader) {
-                            return true;
-                        }
-                        if (oldItemPosition == oldRecentFilesHeader && newItemPosition == recentFilesHeader) {
-                            return true;
-                        }
-                    }
-                    MessageObject oldItem = null;
-                    MessageObject newItem = null;
-
-                    if (oldItemPosition >= oldDownloadingFilesStartRow && oldItemPosition < oldDownloadingFilesEndRow) {
-                        oldItem = oldDownloadingLoadingFiles.get(oldItemPosition - oldDownloadingFilesStartRow);
-                    } else if (oldItemPosition >= oldRecentFilesStartRow && oldItemPosition < oldRecentFilesEndRow) {
-                        oldItem = oldRecentLoadingFiles.get(oldItemPosition - oldRecentFilesStartRow);
-                    }
-
-                    if (newItemPosition >= downloadingFilesStartRow && newItemPosition < downloadingFilesEndRow) {
-                        newItem = currentLoadingFiles.get(newItemPosition - downloadingFilesStartRow);
-                    } else if (newItemPosition >= recentFilesStartRow && newItemPosition < recentFilesEndRow) {
-                        newItem = recentLoadingFiles.get(newItemPosition - recentFilesStartRow);
-                    }
-                    if (newItem != null && oldItem != null && newItem.getDocument() != null && oldItem.getDocument() != null) {
-                        return newItem.getDocument().id == oldItem.getDocument().id;
-                    }
-                    return false;
-                }
-
-                @Override
-                public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-                    return areItemsTheSame(oldItemPosition, newItemPosition);
-                }
-            }).dispatchUpdatesTo(adapter);
-            for (int i = 0; i < recyclerListView.getChildCount(); i++) {
-                View child = recyclerListView.getChildAt(i);
-                int p = recyclerListView.getChildAdapterPosition(child);
-                if (p >= 0) {
-                    RecyclerView.ViewHolder holder = recyclerListView.getChildViewHolder(child);
-                    if (holder == null || holder.shouldIgnore()) {
-                        continue;
-                    }
-                    if (child instanceof GraySectionCell) {
-                        adapter.onBindViewHolder(holder, p);
-                    } else if (child instanceof Cell) {
-                        Cell cell = (Cell) child;
-                        cell.sharedDocumentCell.updateFileExistIcon(true);
-                        messageHashIdTmp.set(cell.sharedDocumentCell.getMessage().getId(), cell.sharedDocumentCell.getMessage().getDialogId());
-                        cell.sharedDocumentCell.setChecked(uiCallback.isSelected(messageHashIdTmp), true);
-                    }
-                }
+    private void copyVisibleTasks(ArrayList<MessageObject> destination, ArrayList<MessageObject> source) {
+        destination.clear();
+        for (int i = 0; i < source.size(); i++) {
+            MessageObject object = source.get(i);
+            if (!object.isRoundVideo() && !object.isVoice()) {
+                destination.add(object);
             }
-        } else {
-            updateRows(currentLoadingFilesTmp, recentLoadingFilesTmp);
-            adapter.notifyDataSetChanged();
         }
     }
 
-    private void updateRows(ArrayList<MessageObject> currentLoadingFilesTmp, ArrayList<MessageObject> recentLoadingFilesTmp) {
-        currentLoadingFiles.clear();
-        for (MessageObject object : currentLoadingFilesTmp) {
-            if (!object.isRoundVideo() && !object.isVoice()) {
-                currentLoadingFiles.add(object);
-            }
-        }
-
-        recentLoadingFiles.clear();
-        for (MessageObject object : recentLoadingFilesTmp) {
-            if (!object.isRoundVideo() && !object.isVoice()) {
-                recentLoadingFiles.add(object);
-            }
-        }
+    private void updateRows(ArrayList<MessageObject> current, ArrayList<MessageObject> recent, ArrayList<MessageObject> failed) {
+        copyVisibleTasks(currentLoadingFiles, current);
+        copyVisibleTasks(recentLoadingFiles, recent);
+        copyVisibleTasks(failedLoadingFiles, failed);
 
         rowCount = 0;
+        downloadedVideosRow = -1;
         downloadingFilesHeader = -1;
         downloadingFilesStartRow = -1;
         downloadingFilesEndRow = -1;
         recentFilesHeader = -1;
         recentFilesStartRow = -1;
         recentFilesEndRow = -1;
+        failedFilesHeader = -1;
+        failedFilesStartRow = -1;
+        failedFilesEndRow = -1;
         hasCurrentDownload = false;
 
-        if (!currentLoadingFiles.isEmpty()) {
-            downloadingFilesHeader = rowCount++;
-            downloadingFilesStartRow = rowCount;
-            rowCount += currentLoadingFiles.size();
-            downloadingFilesEndRow = rowCount;
-
-            for (int i = 0; i < currentLoadingFiles.size(); i++) {
-                if (FileLoader.getInstance(currentAccount).isLoadingFile(currentLoadingFiles.get(i).getFileName())) {
-                    hasCurrentDownload = true;
-                    break;
+        if (selectedDownloadTab == TAB_DOWNLOADING) {
+            if (!currentLoadingFiles.isEmpty()) {
+                downloadingFilesHeader = rowCount++;
+                downloadingFilesStartRow = rowCount;
+                rowCount += currentLoadingFiles.size();
+                downloadingFilesEndRow = rowCount;
+                for (int i = 0; i < currentLoadingFiles.size(); i++) {
+                    if (FileLoader.getInstance(currentAccount).isLoadingFile(currentLoadingFiles.get(i).getFileName())) {
+                        hasCurrentDownload = true;
+                        break;
+                    }
                 }
             }
-        }
-        if (!recentLoadingFiles.isEmpty()) {
-            recentFilesHeader = rowCount++;
-            recentFilesStartRow = rowCount;
-            rowCount += recentLoadingFiles.size();
-            recentFilesEndRow = rowCount;
-
+        } else if (selectedDownloadTab == TAB_COMPLETED) {
+            if (TextUtils.isEmpty(searchQuery)) {
+                downloadedVideosRow = rowCount++;
+            }
+            if (!recentLoadingFiles.isEmpty()) {
+                recentFilesHeader = rowCount++;
+                recentFilesStartRow = rowCount;
+                rowCount += recentLoadingFiles.size();
+                recentFilesEndRow = rowCount;
+            }
+        } else if (!failedLoadingFiles.isEmpty()) {
+            failedFilesHeader = rowCount++;
+            failedFilesStartRow = rowCount;
+            rowCount += failedLoadingFiles.size();
+            failedFilesEndRow = rowCount;
         }
     }
+    private CharSequence getDownloadStatusText(MessageObject messageObject) {
+        if (selectedDownloadTab == TAB_COMPLETED || messageObject == null) {
+            return null;
+        }
+        DownloadController controller = DownloadController.getInstance(currentAccount);
+        DownloadController.DownloadTaskInfo info = controller.getDownloadTaskInfo(messageObject);
+        if (selectedDownloadTab == TAB_FAILED) {
+            int reason = info == null ? 0 : info.failureReason;
+            if (reason == -1) {
+                return "\u5931\u8d25 \u00b7 \u5b58\u50a8\u7a7a\u95f4\u4e0d\u8db3\u6216\u5b58\u50a8\u4e0d\u53ef\u5199";
+            } else if (reason == 2) {
+                return "\u5931\u8d25 \u00b7 \u670d\u52a1\u5668\u91cd\u8bd5\u6b21\u6570\u5df2\u8fbe\u4e0a\u9650";
+            }
+            return "\u5931\u8d25 \u00b7 \u7f51\u7edc\u9519\u8bef\u6216\u6587\u4ef6\u5df2\u4e0d\u53ef\u7528";
+        }
+        if (info == null) {
+            return FileLoader.getInstance(currentAccount).isLoadingFile(messageObject.getFileName())
+                    ? "\u6b63\u5728\u8fde\u63a5" : "\u7b49\u5f85\u4e0b\u8f7d";
+        }
 
+        String progressText;
+        long totalBytes = info.totalBytes > 0 ? info.totalBytes : messageObject.getDocument().size;
+        if (info.downloadedBytes > 0 && totalBytes > 0) {
+            progressText = AndroidUtilities.formatFileSize(info.downloadedBytes) + " / " + AndroidUtilities.formatFileSize(totalBytes);
+        } else {
+            progressText = AndroidUtilities.formatFileSize(totalBytes);
+        }
+
+        if (info.state == DownloadController.DOWNLOAD_STATE_PAUSED) {
+            return progressText + " \u00b7 \u5df2\u6682\u505c";
+        }
+        if (!FileLoader.getInstance(currentAccount).isLoadingFile(messageObject.getFileName())) {
+            return progressText + " \u00b7 \u7b49\u5f85\u4e0b\u8f7d";
+        }
+
+        long now = System.currentTimeMillis();
+        if (info.bytesPerSecond <= 0 || info.lastProgressTime == 0 || now - info.lastProgressTime > 3500) {
+            return progressText + " \u00b7 \u6b63\u5728\u8fde\u63a5";
+        }
+        StringBuilder status = new StringBuilder(progressText)
+                .append(" \u00b7 ")
+                .append(AndroidUtilities.formatFileSize(info.bytesPerSecond))
+                .append("/s");
+        if (info.estimatedSeconds > 0) {
+            status.append(" \u00b7 \u5269\u4f59").append(formatRemainingTime(info.estimatedSeconds));
+        }
+        return status;
+    }
+
+    private String formatRemainingTime(long seconds) {
+        if (seconds < 60) {
+            return Math.max(1, seconds) + "\u79d2";
+        }
+        long minutes = seconds / 60;
+        if (minutes < 60) {
+            long remainingSeconds = seconds % 60;
+            return minutes + "\u5206" + (remainingSeconds == 0 ? "" : remainingSeconds + "\u79d2");
+        }
+        long hours = minutes / 60;
+        long remainingMinutes = minutes % 60;
+        return hours + "\u5c0f\u65f6" + (remainingMinutes == 0 ? "" : remainingMinutes + "\u5206");
+    }
+
+    private void refreshVisibleDownloadStatuses() {
+        if (recyclerListView == null || selectedDownloadTab == TAB_COMPLETED) {
+            return;
+        }
+        for (int i = 0; i < recyclerListView.getChildCount(); i++) {
+            View child = recyclerListView.getChildAt(i);
+            if (child instanceof Cell) {
+                ((Cell) child).sharedDocumentCell.refreshDownloadStatus();
+            }
+        }
+    }
     public void search(String query) {
         searchQuery = query;
         update(false);
@@ -523,6 +578,8 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
             } else if (viewType == 1){
                 Cell sharedDocumentCell = new Cell(parent.getContext());
                 view = sharedDocumentCell;
+            } else if (viewType == 3) {
+                view = new TextCell(parent.getContext());
             } else {
                 SharedAudioCell sharedAudioCell = new SharedAudioCell(parent.getContext()) {
                     @Override
@@ -544,30 +601,29 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
                 GraySectionCell graySectionCell = (GraySectionCell) holder.itemView;
                 if (position == downloadingFilesHeader) {
                     String header = LocaleController.getString(R.string.Downloading);
-                    if (graySectionCell.getText().equals(header)) {
-                        graySectionCell.setRightText(hasCurrentDownload ? LocaleController.getString(R.string.PauseAll) : LocaleController.getString(R.string.ResumeAll), hasCurrentDownload);
-                    } else {
-                        graySectionCell.setText(header, hasCurrentDownload ? LocaleController.getString(R.string.PauseAll) : LocaleController.getString(R.string.ResumeAll), new OnClickListener() {
-                            @Override
-                            public void onClick(View view) {
-                                for (int i = 0; i < currentLoadingFiles.size(); i++) {
-                                    MessageObject messageObject = currentLoadingFiles.get(i);
-                                    if (hasCurrentDownload) {
-                                        AccountInstance.getInstance(UserConfig.selectedAccount).getFileLoader().cancelLoadFile(messageObject.getDocument());
-                                    } else {
-                                        AccountInstance.getInstance(UserConfig.selectedAccount).getFileLoader().loadFile(messageObject.getDocument(), messageObject, FileLoader.PRIORITY_LOW, 0);
-                                        DownloadController.getInstance(currentAccount).updateFilesLoadingPriority();
-                                    }
-                                }
-                                update(true);
-                            }
-                        });
-                    }
+                    graySectionCell.setText(header, hasCurrentDownload ? LocaleController.getString(R.string.PauseAll) : LocaleController.getString(R.string.ResumeAll), view -> {
+                        DownloadController controller = DownloadController.getInstance(currentAccount);
+                        if (hasCurrentDownload) {
+                            controller.pauseAllDownloads();
+                        } else {
+                            controller.resumeAllDownloads();
+                        }
+                        update(true);
+                    });
                 } else if (position == recentFilesHeader) {
                     graySectionCell.setText(LocaleController.getString(R.string.RecentlyDownloaded), LocaleController.getString(R.string.Settings),
                             view -> DownloadsInfoBottomSheet.show(parentActivity, parentFragment)
                     );
+                } else if (position == failedFilesHeader) {
+                    graySectionCell.setText("\u5931\u8d25", LocaleController.getString(R.string.Retry), view -> {
+                        DownloadController.getInstance(currentAccount).retryAllFailedDownloads();
+                        selectedDownloadTab = TAB_DOWNLOADING;
+                        downloadTabs.setInitialTabId(TAB_DOWNLOADING);
+                        update(false);
+                    });
                 }
+            } else if (type == 3) {
+                ((TextCell) holder.itemView).setTextAndIcon("\u5df2\u4e0b\u8f7d\u89c6\u9891", R.drawable.msg_video, true);
             } else {
                 MessageObject messageObject = getMessage(position);
                 if (messageObject != null) {
@@ -594,24 +650,29 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
 
         @Override
         public int getItemViewType(int position) {
-            if (position == downloadingFilesHeader || position == recentFilesHeader) {
+            if (position == downloadedVideosRow) {
+                return 3;
+            }
+            if (position == downloadingFilesHeader || position == recentFilesHeader || position == failedFilesHeader) {
                 return 0;
             }
             MessageObject messageObject = getMessage(position);
             if (messageObject == null) {
                 return 1;
             }
-            if (messageObject.isMusic()) {
+            if (selectedDownloadTab == TAB_COMPLETED && messageObject.isMusic()) {
                 return 2;
             }
             return 1;
         }
 
         private MessageObject getMessage(int position) {
-            if (position >= downloadingFilesStartRow && position < downloadingFilesEndRow) {;
+            if (position >= downloadingFilesStartRow && position < downloadingFilesEndRow) {
                 return currentLoadingFiles.get(position - downloadingFilesStartRow);
             } else if (position >= recentFilesStartRow && position < recentFilesEndRow) {
                 return recentLoadingFiles.get(position - recentFilesStartRow);
+            } else if (position >= failedFilesStartRow && position < failedFilesEndRow) {
+                return failedLoadingFiles.get(position - failedFilesStartRow);
             }
             return null;
         }
@@ -623,7 +684,7 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
 
         @Override
         public boolean isEnabled(RecyclerView.ViewHolder holder) {
-            return holder.getItemViewType() == 1 || holder.getItemViewType() == 2;
+            return holder.getItemViewType() == 1 || holder.getItemViewType() == 2 || holder.getItemViewType() == 3;
         }
     }
 
@@ -637,6 +698,8 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
         }
         checkFilesExist();
         update(false);
+        AndroidUtilities.cancelRunOnUIThread(downloadStatusRefreshRunnable);
+        AndroidUtilities.runOnUIThread(downloadStatusRefreshRunnable, 1000);
     }
 
     @Override
@@ -644,6 +707,7 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
         super.onDetachedFromWindow();
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.onDownloadingFilesChanged);
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.premiumFloodWaitReceived);
+        AndroidUtilities.cancelRunOnUIThread(downloadStatusRefreshRunnable);
     }
 
 
@@ -667,6 +731,7 @@ public class SearchDownloadsContainer extends FrameLayout implements Notificatio
             super(context);
             sharedDocumentCell = new SharedDocumentCell(context, SharedDocumentCell.VIEW_TYPE_GLOBAL_SEARCH);
             sharedDocumentCell.rightDateTextView.setVisibility(View.GONE);
+            sharedDocumentCell.setDownloadStatusProvider(SearchDownloadsContainer.this::getDownloadStatusText);
             addView(sharedDocumentCell);
         }
 

@@ -554,6 +554,27 @@ public class FileLoader extends BaseController {
         cancelLoadFile(document, null, null, null, null, null, deleteFile);
     }
 
+    public void deletePartialDownloadFiles(TLRPC.Document document) {
+        if (document == null) {
+            return;
+        }
+        File cacheDirectory = getDirectory(MEDIA_DIR_CACHE);
+        if (cacheDirectory == null) {
+            return;
+        }
+        String prefix = document.dc_id + "_" + document.id;
+        Utilities.globalQueue.postRunnable(() -> {
+            String[] suffixes = {".temp", ".temp.enc", "_64.pt", "_64.preload", "_64.iv", "_64.iv.enc"};
+            for (int i = 0; i < suffixes.length; i++) {
+                try {
+                    new File(cacheDirectory, prefix + suffixes[i]).delete();
+                } catch (Exception e) {
+                    FileLog.e(e);
+                }
+            }
+        });
+    }
+
     public void cancelLoadFile(SecureDocument document) {
         cancelLoadFile(null, document, null, null, null, null, false);
     }
@@ -614,7 +635,12 @@ public class FileLoader extends BaseController {
             FileLoadOperation operation = loadOperationPaths.remove(fileName);
             if (operation != null) {
                 FileLoaderPriorityQueue queue = operation.getQueue();
-                queue.cancel(operation);
+                if (deleteFile) {
+                    queue.remove(operation);
+                    operation.cancel(true);
+                } else {
+                    queue.cancel(operation);
+                }
             }
         });
         if (removed && document != null) {
@@ -1035,7 +1061,7 @@ public class FileLoader extends BaseController {
                     delegate.fileDidFailedLoad(fileName, reason);
                 }
 
-                if (document != null && parentObject instanceof MessageObject && reason == 0) {
+                if (document != null && parentObject instanceof MessageObject && reason != 1) {
                     getDownloadController().onDownloadFail((MessageObject) parentObject, reason);
                 } else if (reason == -1) {
                     LaunchActivity.checkFreeDiscSpaceStatic(2);

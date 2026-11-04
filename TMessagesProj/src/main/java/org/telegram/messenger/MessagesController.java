@@ -188,7 +188,7 @@ public class MessagesController extends BaseController implements NotificationCe
     private LongSparseIntArray pendingUnreadCounter = new LongSparseIntArray();
     private int lastPrintingStringCount;
     private SparseArray<ChatlistUpdatesStat> chatlistFoldersUpdates = new SparseArray<>();
-    public int largeQueueMaxActiveOperations = 2;
+    public int largeQueueMaxActiveOperations = 4;
     public int smallQueueMaxActiveOperations = 5;
     public int stealthModeFuture;
     public int stealthModePast;
@@ -1689,7 +1689,7 @@ public class MessagesController extends BaseController implements NotificationCe
         giftTextFieldIcon = mainPreferences.getBoolean("giftTextFieldIcon", false);
         checkResetLangpack = mainPreferences.getInt("checkResetLangpack", 0);
         smallQueueMaxActiveOperations = mainPreferences.getInt("smallQueueMaxActiveOperations", 5);
-        largeQueueMaxActiveOperations = mainPreferences.getInt("largeQueueMaxActiveOperations", 2);
+        largeQueueMaxActiveOperations = Math.max(4, mainPreferences.getInt("largeQueueMaxActiveOperations", 4));
         stealthModeFuture = mainPreferences.getInt("stories_stealth_future_period", 25 * 60);
         storiesChangelogUserId = mainPreferences.getLong("stories_changelog_user_id", 777000);
         giveawayAddPeersMax = mainPreferences.getLong("giveaway_add_peers_max", 10);
@@ -2732,7 +2732,7 @@ public class MessagesController extends BaseController implements NotificationCe
                 }
                 case "large_queue_max_active_operations_count": {
                     if (value.value instanceof TLRPC.TL_jsonNumber) {
-                        largeQueueMaxActiveOperations = (int) ((TLRPC.TL_jsonNumber) value.value).value;
+                        largeQueueMaxActiveOperations = Math.max(4, (int) ((TLRPC.TL_jsonNumber) value.value).value);
                         editor.putInt("largeQueueMaxActiveOperations", largeQueueMaxActiveOperations);
                     }
                     break;

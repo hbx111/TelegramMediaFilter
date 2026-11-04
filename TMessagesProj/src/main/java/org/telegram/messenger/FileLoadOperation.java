@@ -174,6 +174,9 @@ public class FileLoadOperation {
     private int downloadChunkSizeAnimation = 1024 * 128;
     private int maxDownloadRequestsAnimation = 4;
 
+    private static final int TURBO_PART_SIZE = 512 * 1024;
+    private static final int TURBO_MAX_REQUESTS = 8;
+
     private final static int preloadMaxBytes = 2 * 1024 * 1024;
 
     private String fileName;
@@ -298,16 +301,24 @@ public class FileLoadOperation {
     }
 
     private void updateParams() {
-        if ((preloadPrefixSize > 0 || MessagesController.getInstance(currentAccount).getfileExperimentalParams) && !forceSmallChunk) {
-            downloadChunkSizeBig = 1024 * 512;
-            maxDownloadRequests = 8;
-            maxDownloadRequestsBig = 8;
-        } else {
-            downloadChunkSizeBig = 1024 * 128;
-            maxDownloadRequests = 4;
-            maxDownloadRequestsBig = 4;
-        }
+        downloadChunkSizeBig = TURBO_PART_SIZE;
+        int requests = getAdaptiveDownloadRequests(totalBytesCount);
+        maxDownloadRequests = requests;
+        maxDownloadRequestsBig = requests;
         maxCdnParts = (int) (FileLoader.DEFAULT_MAX_FILE_SIZE / downloadChunkSizeBig);
+    }
+
+    private int getAdaptiveDownloadRequests(long fileSize) {
+        if (fileSize <= 0) {
+            return 4;
+        } else if (fileSize < 1024L * 1024L) {
+            return 1;
+        } else if (fileSize < 5L * 1024L * 1024L) {
+            return 2;
+        } else if (fileSize < 20L * 1024L * 1024L) {
+            return 4;
+        }
+        return TURBO_MAX_REQUESTS;
     }
 
     public FileLoadOperation(ImageLocation imageLocation, Object parent, String extension, long size) {
@@ -1380,7 +1391,7 @@ public class FileLoadOperation {
         cancel(false);
     }
 
-    private void cancel(boolean deleteFiles) {
+    public void cancel(boolean deleteFiles) {
         Utilities.stageQueue.postRunnable(() -> {
             cancelOnStage(deleteFiles);
         });

@@ -61,6 +61,10 @@ import java.util.Locale;
 
 public class SharedDocumentCell extends FrameLayout implements DownloadController.FileDownloadProgressListener {
 
+    public interface DownloadStatusProvider {
+        CharSequence getStatus(MessageObject messageObject);
+    }
+
     private ImageView placeholderImageView;
     private BackupImageView thumbImageView;
     private TextView nameTextView;
@@ -98,6 +102,7 @@ public class SharedDocumentCell extends FrameLayout implements DownloadControlle
     private long downloadedSize;
     boolean showReorderIcon;
     float showReorderIconProgress;
+    private DownloadStatusProvider downloadStatusProvider;
 
     public SharedDocumentCell(Context context) {
         this(context, VIEW_TYPE_DEFAULT);
@@ -503,6 +508,16 @@ public class SharedDocumentCell extends FrameLayout implements DownloadControlle
         if (message == null || message.getDocument() == null) {
             return;
         }
+        if (downloadStatusProvider != null) {
+            CharSequence status = downloadStatusProvider.getStatus(message);
+            if (!TextUtils.isEmpty(status)) {
+                dateTextView.setText(status);
+                if (rightDateTextView != null) {
+                    rightDateTextView.setText(LocaleController.stringForMessageListDate(message.messageOwner.date));
+                }
+                return;
+            }
+        }
         long date = (long) message.messageOwner.date * 1000;
         String fileSize = null;
         if (downloadedSize == 0) {
@@ -591,6 +606,15 @@ public class SharedDocumentCell extends FrameLayout implements DownloadControlle
             }
             DownloadController.getInstance(currentAccount).removeLoadingFileObserver(this);
         }
+    }
+
+    public void setDownloadStatusProvider(DownloadStatusProvider provider) {
+        downloadStatusProvider = provider;
+        updateDateView();
+    }
+
+    public void refreshDownloadStatus() {
+        updateDateView();
     }
 
     public MessageObject getMessage() {

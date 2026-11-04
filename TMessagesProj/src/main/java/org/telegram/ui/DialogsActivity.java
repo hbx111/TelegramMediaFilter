@@ -3273,7 +3273,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             downloadsItem = menu.addItem(3, new ColorDrawable(Color.TRANSPARENT));
             downloadsItem.addView(downloadProgressIcon = new DownloadProgressIcon(currentAccount, context));
             downloadsItem.setContentDescription(getString(R.string.DownloadsTabs));
-            downloadsItem.setVisibility(View.GONE);
+            // Downloads is the entry point for the persistent queue, not only a transient progress badge.
+            downloadsItemVisible = true;
+            downloadsItem.setVisibility(View.VISIBLE);
 
             updateProxyButton(false, false);
         }
@@ -3290,6 +3292,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         fragmentSearchField.setPadding(dp(4), dp(4), dp(4), dp(4));
         fragmentSearchField.setPivotX(0);
         fragmentSearchField.setPivotY(0);
+        if (downloadsItem != null) {
+            AndroidUtilities.removeFromParent(downloadsItem);
+            fragmentSearchField.addAdditionalIcon(downloadsItem);
+            fragmentSearchField.updateColors();
+        }
         if (initialDialogsType == DIALOGS_TYPE_DEFAULT) {
             speedItem = menu.addItem(-47, R.drawable.avd_speed);
             AndroidUtilities.removeFromParent(speedItem);
@@ -10223,18 +10230,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         if (proxyDrawable == null || doneItem != null && doneItem.getVisibility() == View.VISIBLE) {
             return;
         }
-        boolean showDownloads = false;
-        for (int i = 0; i < getDownloadController().downloadingFiles.size(); i++) {
-            if (getFileLoader().isLoadingFile(getDownloadController().downloadingFiles.get(i).getFileName())) {
-                showDownloads = true;
-                break;
-            }
-        }
-        if ((getDownloadController().hasUnviewedDownloads() || showDownloads || (downloadsItem.getVisibility() == View.VISIBLE && downloadsItem.getAlpha() == 1 && !force))) {
-            downloadsItemVisible = true;
-        } else {
-            downloadsItemVisible = false;
-        }
+        // Keep queue management reachable even when no transfer is currently active.
+        downloadsItemVisible = downloadsItem != null;
         checkUi_itemDownloadsVisibility();
 
         final SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("mainconfig", Activity.MODE_PRIVATE);
@@ -11178,6 +11175,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
         }
     }
+
 
     public float getContactsAlpha() {
         return contactsAlpha;
@@ -13775,6 +13773,15 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
             presentFragment(new ChatActivity(args));
         });
+        io.add(R.drawable.msg_openprofile, getString(R.string.MainTabsProfile), () -> {
+            Bundle args = new Bundle();
+            args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
+            args.putBoolean("my_profile", true);
+            presentFragment(new ProfileActivity(args));
+        });
+        io.add(R.drawable.msg_settings_old, getString(R.string.Settings), () -> {
+            presentFragment(new SettingsActivity());
+        });
         if (ApplicationLoader.applicationLoaderInstance != null) {
             ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
         }
@@ -13808,12 +13815,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 }
             }
         }
-        if (getUserConfig().showCallsTab) {
-            io.add(R.drawable.msg_settings_old, getString(R.string.Settings), () -> {
-                presentFragment(new SettingsActivity());
-            });
-        }
-
         if (proxyMenuSubItem != null) {
             proxyMenuSubItem.subtextView.setTextColor(getThemedColor(Theme.key_groupcreate_sectionText));
             proxyMenuSubItem.setOnClickListener(v -> {
@@ -14100,6 +14101,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         fragmentSearchField.setAlpha(alpha);
         fragmentSearchField.setVisibility(alpha > 0 ? View.VISIBLE : View.GONE);
         animatorSearchButtonVisible.setValue(alpha <= 0.01f, true);
+        checkUi_itemDownloadsVisibility();
     }
 
     private void checkUi_searchFieldStyle() {
@@ -14153,12 +14155,25 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void checkUi_itemDownloadsVisibility() {
+        if (downloadsItem == null) {
+            return;
+        }
+
         final float factor0 = downloadsItemVisible ? 1 : 0;
-        final float factor1 = 1f - animatorSearchVisible.getFloatValue();
-        final float factor2 = 1f - getRightSlidingProgress();
-        final float factor3 = 1f - animatorDoneButtonVisible.getFloatValue();
-        final float factor = factor0 * factor1 * factor2 * factor3;
+        final float factor1 = 1f - getRightSlidingProgress();
+        final float factor2 = 1f - animatorDoneButtonVisible.getFloatValue();
+        final float factor = factor0 * factor1 * factor2;
         FragmentFloatingButton.setAnimatedVisibility(downloadsItem, factor);
+
+        // The scroll-driven SearchView is a separate child from the toolbar. Move the
+        // queue entry toward the outer toolbar edge while that field expands so neither
+        // control appears to occupy the same horizontal slot.
+        final int maxScrollWithoutSearch = getMaxScrollYOffsetWithoutSearch();
+        final float searchFieldByScroll = 1f - MathUtils.clamp((-scrollYOffset - maxScrollWithoutSearch) / dp(SEARCH_FIELD_HEIGHT), 0, 1);
+        final float searchFieldProgress = Math.max(animatorSearchVisible.getFloatValue(), searchFieldByScroll);
+        final float edgeDirection = LocaleController.isRTL ? -1f : 1f;
+        downloadsItem.setTranslationX(edgeDirection * dp(8) * searchFieldProgress);
+        downloadsItem.setAlpha(factor * (1f - 0.25f * searchFieldProgress));
     }
 
     private void checkUi_itemSpeedVisibility() {

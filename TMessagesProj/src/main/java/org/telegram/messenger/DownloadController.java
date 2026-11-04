@@ -80,9 +80,40 @@ public class DownloadController extends BaseController implements NotificationCe
 
     private LongSparseArray<Long> typingTimes = new LongSparseArray<>();
 
+    public static final int DOWNLOAD_STATE_DOWNLOADING = 0;
+    public static final int DOWNLOAD_STATE_COMPLETED = 1;
+    public static final int DOWNLOAD_STATE_PAUSED = 2;
+    private static final int DOWNLOAD_STATE_FAILED = 10;
+    private static final int DOWNLOAD_STATE_FAILED_STORAGE = 11;
+    private static final int DOWNLOAD_STATE_FAILED_RETRY_LIMIT = 12;
+
     public final ArrayList<MessageObject> downloadingFiles = new ArrayList<>();
     public final ArrayList<MessageObject> recentDownloadingFiles = new ArrayList<>();
+    public final ArrayList<MessageObject> failedDownloadingFiles = new ArrayList<>();
     public final SparseArray<MessageObject> unviewedDownloads = new SparseArray<>();
+
+    private final HashMap<String, DownloadTaskInfo> downloadTaskInfos = new HashMap<>();
+
+    public static class DownloadTaskInfo {
+        public int state;
+        public int failureReason;
+        public long downloadedBytes;
+        public long totalBytes;
+        public long bytesPerSecond;
+        public long estimatedSeconds;
+        public long lastProgressTime;
+
+        private long lastSampleBytes;
+        private long lastSampleTime;
+
+        private void resetTransferSample() {
+            bytesPerSecond = 0;
+            estimatedSeconds = 0;
+            lastProgressTime = 0;
+            lastSampleBytes = 0;
+            lastSampleTime = 0;
+        }
+    }
 
     public static class Preset {
         public int[] mask = new int[4];
@@ -1354,10 +1385,11 @@ public class DownloadController extends BaseController implements NotificationCe
         } else if (id == NotificationCenter.fileLoadProgressChanged) {
             listenerInProgress = true;
             String fileName = (String) args[0];
+            Long loadedSize = (Long) args[1];
+            Long totalSize = (Long) args[2];
+            updateTaskProgress(fileName, loadedSize, totalSize);
             ArrayList<WeakReference<FileDownloadProgressListener>> arrayList = loadingFileObservers.get(fileName);
             if (arrayList != null) {
-                Long loadedSize = (Long) args[1];
-                Long totalSize = (Long) args[2];
                 for (int a = 0, size = arrayList.size(); a < size; a++) {
                     WeakReference<FileDownloadProgressListener> reference = arrayList.get(a);
                     if (reference.get() != null) {
@@ -1439,6 +1471,187 @@ public class DownloadController extends BaseController implements NotificationCe
     }
 
 
+    public DownloadTaskInfo getDownloadTaskInfo(MessageObject messageObject) {
+        if (messageObject == null) {
+            return null;
+        }
+        return downloadTaskInfos.get(messageObject.getFileName());
+    }
+
+    public boolean isDownloadPaused(MessageObject messageObject) {
+        DownloadTaskInfo info = getDownloadTaskInfo(messageObject);
+        return info != null && info.state == DOWNLOAD_STATE_PAUSED;
+    }
+
+    public void getFailedLoadingFiles(ArrayList<MessageObject> result) {
+        result.clear();
+        result.addAll(failedDownloadingFiles);
+        for (int i = 0; i < result.size(); i++) {
+            result.get(i).isDownloadingFile = true;
+        }
+    }
+
+    public void pauseDownload(MessageObject messageObject) {
+        if (messageObject == null || messageObject.getDocument() == null || !containsDocument(downloadingFiles, messageObject.getDocument())) {
+            return;
+        }
+        DownloadTaskInfo info = getOrCreateTaskInfo(messageObject);
+        info.state = DOWNLOAD_STATE_PAUSED;
+        info.failureReason = 0;
+        info.resetTransferSample();
+        persistDownloadState(messageObject, DOWNLOAD_STATE_PAUSED);
+        getFileLoader().cancelLoadFile(messageObject.getDocument(), false);
+        getNotificationCenter().postNotificationName(NotificationCenter.onDownloadingFilesChanged);
+    }
+
+    public void resumeDownload(MessageObject messageObject) {
+        if (messageObject == null || messageObject.getDocument() == null) {
+            return;
+        }
+        removeDocument(failedDownloadingFiles, messageObject.getDocument());
+        removeDocument(recentDownloadingFiles, messageObject.getDocument());
+        if (!containsDocument(downloadingFiles, messageObject.getDocument())) {
+            downloadingFiles.add(0, messageObject);
+        }
+        messageObject.putInDownloadsStore = true;
+        DownloadTaskInfo info = getOrCreateTaskInfo(messageObject);
+        info.state = DOWNLOAD_STATE_DOWNLOADING;
+        info.failureReason = 0;
+        info.resetTransferSample();
+        persistDownloadState(messageObject, DOWNLOAD_STATE_DOWNLOADING);
+        getFileLoader().loadFile(messageObject.getDocument(), messageObject, FileLoader.PRIORITY_NORMAL_UP, 0);
+        updateFilesLoadingPriority();
+        getNotificationCenter().postNotificationName(NotificationCenter.onDownloadingFilesChanged);
+    }
+
+    public void retryDownload(MessageObject messageObject) {
+        resumeDownload(messageObject);
+    }
+
+    public void pauseAllDownloads() {
+        ArrayList<MessageObject> copy = new ArrayList<>(downloadingFiles);
+        for (int i = 0; i < copy.size(); i++) {
+            if (getFileLoader().isLoadingFile(copy.get(i).getFileName())) {
+                pauseDownload(copy.get(i));
+            }
+        }
+    }
+
+    public void resumeAllDownloads() {
+        ArrayList<MessageObject> copy = new ArrayList<>(downloadingFiles);
+        for (int i = 0; i < copy.size(); i++) {
+            if (!getFileLoader().isLoadingFile(copy.get(i).getFileName())) {
+                resumeDownload(copy.get(i));
+            }
+        }
+    }
+
+    public void retryAllFailedDownloads() {
+        ArrayList<MessageObject> copy = new ArrayList<>(failedDownloadingFiles);
+        for (int i = 0; i < copy.size(); i++) {
+            retryDownload(copy.get(i));
+        }
+    }
+
+    private DownloadTaskInfo getOrCreateTaskInfo(MessageObject messageObject) {
+        String fileName = messageObject.getFileName();
+        DownloadTaskInfo info = downloadTaskInfos.get(fileName);
+        if (info == null) {
+            info = new DownloadTaskInfo();
+            info.state = DOWNLOAD_STATE_DOWNLOADING;
+            if (messageObject.getDocument() != null) {
+                info.totalBytes = messageObject.getDocument().size;
+            }
+            downloadTaskInfos.put(fileName, info);
+        }
+        return info;
+    }
+
+    private void updateTaskProgress(String fileName, long downloadedBytes, long totalBytes) {
+        DownloadTaskInfo info = downloadTaskInfos.get(fileName);
+        if (info == null || info.state != DOWNLOAD_STATE_DOWNLOADING) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        info.downloadedBytes = downloadedBytes;
+        info.totalBytes = totalBytes;
+        info.lastProgressTime = now;
+        if (info.lastSampleTime > 0 && now - info.lastSampleTime >= 250 && downloadedBytes >= info.lastSampleBytes) {
+            long instantSpeed = (downloadedBytes - info.lastSampleBytes) * 1000L / Math.max(1L, now - info.lastSampleTime);
+            if (instantSpeed > 0) {
+                info.bytesPerSecond = info.bytesPerSecond == 0 ? instantSpeed : (info.bytesPerSecond * 3 + instantSpeed) / 4;
+                info.estimatedSeconds = totalBytes > downloadedBytes ? (totalBytes - downloadedBytes + info.bytesPerSecond - 1) / info.bytesPerSecond : 0;
+            }
+        }
+        if (info.lastSampleTime == 0 || now - info.lastSampleTime >= 250) {
+            info.lastSampleBytes = downloadedBytes;
+            info.lastSampleTime = now;
+        }
+    }
+
+    private void persistDownloadState(MessageObject messageObject, int stateValue) {
+        if (messageObject == null || messageObject.getDocument() == null) {
+            return;
+        }
+        TLRPC.Document document = messageObject.getDocument();
+        getMessagesStorage().getStorageQueue().postRunnable(() -> {
+            try {
+                SQLitePreparedStatement state = getMessagesStorage().getDatabase().executeFast("UPDATE downloading_documents SET state = ?, date = ? WHERE hash = ? AND id = ?");
+                state.bindInteger(1, stateValue);
+                state.bindLong(2, System.currentTimeMillis());
+                state.bindInteger(3, document.dc_id);
+                state.bindLong(4, document.id);
+                state.step();
+                state.dispose();
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+        });
+    }
+
+    private static boolean containsDocument(ArrayList<MessageObject> messages, TLRPC.Document document) {
+        if (document == null) {
+            return false;
+        }
+        for (int i = 0; i < messages.size(); i++) {
+            TLRPC.Document itemDocument = messages.get(i).getDocument();
+            if (itemDocument != null && itemDocument.id == document.id && itemDocument.dc_id == document.dc_id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void removeDocument(ArrayList<MessageObject> messages, TLRPC.Document document) {
+        if (document == null) {
+            return;
+        }
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            TLRPC.Document itemDocument = messages.get(i).getDocument();
+            if (itemDocument != null && itemDocument.id == document.id && itemDocument.dc_id == document.dc_id) {
+                messages.remove(i);
+            }
+        }
+    }
+
+    private static int failureStateForReason(int reason) {
+        if (reason == -1) {
+            return DOWNLOAD_STATE_FAILED_STORAGE;
+        } else if (reason == 2) {
+            return DOWNLOAD_STATE_FAILED_RETRY_LIMIT;
+        }
+        return DOWNLOAD_STATE_FAILED;
+    }
+
+    private static int failureReasonForState(int state) {
+        if (state == DOWNLOAD_STATE_FAILED_STORAGE) {
+            return -1;
+        } else if (state == DOWNLOAD_STATE_FAILED_RETRY_LIMIT) {
+            return 2;
+        }
+        return 0;
+    }
+
     public void startDownloadFile(TLRPC.Document document, MessageObject parentObject) {
         if (parentObject == null) {
             return;
@@ -1479,6 +1692,11 @@ public class DownloadController extends BaseController implements NotificationCe
                 }
             }
             if (!contains) {
+                removeDocument(failedDownloadingFiles, parentDocument);
+                DownloadTaskInfo info = getOrCreateTaskInfo(parentObject);
+                info.state = DOWNLOAD_STATE_DOWNLOADING;
+                info.failureReason = 0;
+                info.resetTransferSample();
                 downloadingFiles.add(0, parentObject);
                 getMessagesStorage().getStorageQueue().postRunnable(() -> {
                     try {
@@ -1510,6 +1728,8 @@ public class DownloadController extends BaseController implements NotificationCe
         }
         TLRPC.Document document = parentObject.getDocument();
         AndroidUtilities.runOnUIThread(() -> {
+            downloadTaskInfos.remove(parentObject.getFileName());
+            removeDocument(failedDownloadingFiles, document);
             boolean removed = false;
             for (int i = 0; i < downloadingFiles.size(); i++) {
                 if (downloadingFiles.get(i).getDocument() != null && downloadingFiles.get(i).getDocument().id == document.id) {
@@ -1548,42 +1768,28 @@ public class DownloadController extends BaseController implements NotificationCe
     }
 
     public void onDownloadFail(MessageObject parentObject, int reason) {
-        if (parentObject == null) {
+        if (parentObject == null || parentObject.getDocument() == null || !parentObject.putInDownloadsStore || reason == 1) {
             return;
         }
 
         AndroidUtilities.runOnUIThread(() -> {
-            boolean removed = false;
             TLRPC.Document parentDocument = parentObject.getDocument();
-            for (int i = 0; i < downloadingFiles.size(); i++) {
-                TLRPC.Document downloadingDocument = downloadingFiles.get(i).getDocument();
-                if (downloadingDocument == null || parentDocument != null && downloadingDocument.id == parentDocument.id) {
-                    downloadingFiles.remove(i);
-                    removed = true;
-                    break;
-                }
+            removeDocument(downloadingFiles, parentDocument);
+            removeDocument(recentDownloadingFiles, parentDocument);
+            if (!containsDocument(failedDownloadingFiles, parentDocument)) {
+                failedDownloadingFiles.add(0, parentObject);
             }
-            if (removed) {
-                getNotificationCenter().postNotificationName(NotificationCenter.onDownloadingFilesChanged);
-                if (reason == 0) {
-                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_ERROR, LocaleController.formatString("MessageNotFound", R.string.MessageNotFound));
-                } else if (reason == -1) {
-                    LaunchActivity.checkFreeDiscSpaceStatic(2);
-                }
+            DownloadTaskInfo info = getOrCreateTaskInfo(parentObject);
+            info.state = DOWNLOAD_STATE_FAILED;
+            info.failureReason = reason;
+            info.resetTransferSample();
+            getNotificationCenter().postNotificationName(NotificationCenter.onDownloadingFilesChanged);
+            if (reason == -1) {
+                LaunchActivity.checkFreeDiscSpaceStatic(2);
             }
         });
 
-        getMessagesStorage().getStorageQueue().postRunnable(() -> {
-            try {
-                SQLitePreparedStatement state = getMessagesStorage().getDatabase().executeFast("DELETE FROM downloading_documents WHERE hash = ? AND id = ?");
-                state.bindInteger(1, parentObject.getDocument().dc_id);
-                state.bindLong(2, parentObject.getDocument().id);
-                state.step();
-                state.dispose();
-            } catch (Exception e) {
-                FileLog.e(e);
-            }
-        });
+        persistDownloadState(parentObject, failureStateForReason(reason));
     }
 
     Runnable clearUnviewedDownloadsRunnale = new Runnable() {
@@ -1621,7 +1827,8 @@ public class DownloadController extends BaseController implements NotificationCe
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
             ArrayList<MessageObject> downloadingMessages = new ArrayList<>();
             ArrayList<MessageObject> recentlyDownloadedMessages = new ArrayList<>();
-            ArrayList<MessageObject> newMessages = new ArrayList<>();
+            ArrayList<MessageObject> failedMessages = new ArrayList<>();
+            HashMap<String, DownloadTaskInfo> loadedTaskInfos = new HashMap<>();
             try {
                 getMessagesStorage().getDatabase().executeFast("DELETE FROM downloading_documents WHERE state = 1 AND rowid NOT IN (SELECT rowid FROM downloading_documents WHERE state = 1 ORDER BY date DESC LIMIT 100)").stepThis().dispose();
                 SQLiteCursor cursor2 = getMessagesStorage().getDatabase().queryFinalized("SELECT data, state FROM downloading_documents ORDER BY date DESC");
@@ -1633,11 +1840,26 @@ public class DownloadController extends BaseController implements NotificationCe
                         if (message != null) {
                             message.readAttachPath(data, UserConfig.getInstance(currentAccount).clientUserId);
                             MessageObject messageObject = new MessageObject(currentAccount, message, false, false);
-                            newMessages.add(messageObject);
-                            if (state == 0) {
+                            messageObject.putInDownloadsStore = true;
+                            if (state == DOWNLOAD_STATE_DOWNLOADING || state == DOWNLOAD_STATE_PAUSED) {
                                 downloadingMessages.add(messageObject);
-                            } else {
+                                DownloadTaskInfo info = new DownloadTaskInfo();
+                                info.state = state;
+                                if (messageObject.getDocument() != null) {
+                                    info.totalBytes = messageObject.getDocument().size;
+                                }
+                                loadedTaskInfos.put(messageObject.getFileName(), info);
+                            } else if (state == DOWNLOAD_STATE_COMPLETED) {
                                 recentlyDownloadedMessages.add(messageObject);
+                            } else if (state >= DOWNLOAD_STATE_FAILED) {
+                                failedMessages.add(messageObject);
+                                DownloadTaskInfo info = new DownloadTaskInfo();
+                                info.state = DOWNLOAD_STATE_FAILED;
+                                info.failureReason = failureReasonForState(state);
+                                if (messageObject.getDocument() != null) {
+                                    info.totalBytes = messageObject.getDocument().size;
+                                }
+                                loadedTaskInfos.put(messageObject.getFileName(), info);
                             }
                         }
                         data.reuse();
@@ -1650,13 +1872,19 @@ public class DownloadController extends BaseController implements NotificationCe
 
             getFileLoader().checkMediaExistance(downloadingMessages);
             getFileLoader().checkMediaExistance(recentlyDownloadedMessages);
+            getFileLoader().checkMediaExistance(failedMessages);
 
             AndroidUtilities.runOnUIThread(() -> {
                 downloadingFiles.clear();
                 downloadingFiles.addAll(downloadingMessages);
-
                 recentDownloadingFiles.clear();
                 recentDownloadingFiles.addAll(recentlyDownloadedMessages);
+                failedDownloadingFiles.clear();
+                failedDownloadingFiles.addAll(failedMessages);
+
+                downloadTaskInfos.clear();
+                downloadTaskInfos.putAll(loadedTaskInfos);
+                getNotificationCenter().postNotificationName(NotificationCenter.onDownloadingFilesChanged);
             });
         });
     }
@@ -1693,6 +1921,7 @@ public class DownloadController extends BaseController implements NotificationCe
     }
 
     public void deleteRecentFiles(ArrayList<MessageObject> messageObjects) {
+        ArrayList<MessageObject> filesToDelete = new ArrayList<>();
         for (int i = 0; i < messageObjects.size(); i++) {
             boolean found = false;
             for (int j = 0; j < recentDownloadingFiles.size(); j++) {
@@ -1711,22 +1940,36 @@ public class DownloadController extends BaseController implements NotificationCe
                     }
                 }
             }
-            messageObjects.get(i).putInDownloadsStore = false;
-            FileLoader.getInstance(currentAccount).loadFile(messageObjects.get(i).getDocument(), messageObjects.get(i), FileLoader.PRIORITY_LOW, 0);
-            FileLoader.getInstance(currentAccount).cancelLoadFile(messageObjects.get(i).getDocument(), true);
+            if (!found) {
+                for (int j = 0; j < failedDownloadingFiles.size(); j++) {
+                    if (messageObjects.get(i).getId() == failedDownloadingFiles.get(j).getId() && failedDownloadingFiles.get(j).getDialogId() == messageObjects.get(i).getDialogId()) {
+                        failedDownloadingFiles.remove(j);
+                        break;
+                    }
+                }
+            }
+            MessageObject messageObject = messageObjects.get(i);
+            messageObject.putInDownloadsStore = false;
+            downloadTaskInfos.remove(messageObject.getFileName());
+            if (messageObject.getDocument() != null) {
+                FileLoader.getInstance(currentAccount).cancelLoadFile(messageObject.getDocument(), true);
+                FileLoader.getInstance(currentAccount).deletePartialDownloadFiles(messageObject.getDocument());
+                filesToDelete.add(messageObject);
+            }
         }
         getNotificationCenter().postNotificationName(NotificationCenter.onDownloadingFilesChanged);
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
             try {
                 SQLitePreparedStatement state = getMessagesStorage().getDatabase().executeFast("DELETE FROM downloading_documents WHERE hash = ? AND id = ?");
-                for (int i = 0; i < messageObjects.size(); i++) {
+                for (int i = 0; i < filesToDelete.size(); i++) {
+                    MessageObject messageObject = filesToDelete.get(i);
                     state.requery();
-                    state.bindInteger(1, messageObjects.get(i).getDocument().dc_id);
-                    state.bindLong(2, messageObjects.get(i).getDocument().id);
+                    state.bindInteger(1, messageObject.getDocument().dc_id);
+                    state.bindLong(2, messageObject.getDocument().id);
                     state.step();
 
                     try {
-                        File file = FileLoader.getInstance(currentAccount).getPathToMessage(messageObjects.get(i).messageOwner);
+                        File file = FileLoader.getInstance(currentAccount).getPathToMessage(messageObject.messageOwner);
                         file.delete();
                     } catch (Exception e) {
                         FileLog.e(e);
