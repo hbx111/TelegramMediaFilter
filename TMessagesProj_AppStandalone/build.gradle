@@ -82,6 +82,7 @@ android {
             ndk.debugSymbolLevel = 'FULL'
         }
         fast {
+            matchingFallbacks = ['release']
             debuggable false
             jniDebuggable false
             signingConfig signingConfigs.release

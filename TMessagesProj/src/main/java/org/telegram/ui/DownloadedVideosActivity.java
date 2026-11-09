@@ -14,6 +14,7 @@ import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.messenger.Utilities;
+import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.ActionBarMenu;
 import org.telegram.ui.ActionBar.ActionBarMenuItem;
@@ -29,6 +30,7 @@ import org.telegram.ui.Storage.CacheModel;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 
 public class DownloadedVideosActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
@@ -183,9 +185,13 @@ public class DownloadedVideosActivity extends BaseFragment implements Notificati
         getFileLoader().getFileDatabase().getQueue().postRunnable(() -> {
             CacheModel model = new CacheModel(false);
             HashSet<String> paths = new HashSet<>();
-            collectManualDownloads(manualDownloads, model, paths);
-            collectVideos(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_VIDEO), model, paths);
-            collectVideos(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_VIDEO_PUBLIC), model, paths);
+            HashMap<String, CacheModel.FileInfo> videoGroups = new HashMap<>();
+            collectManualDownloads(manualDownloads, model, paths, videoGroups);
+            // Turrit 的下载记录是主数据源；这里额外接入旧版本已经落盘的视频，
+            // 避免升级后原有“已下载视频”突然变成空列表。
+            collectVideos(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_VIDEO), model, paths, videoGroups);
+            collectVideos(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_VIDEO_PUBLIC), model, paths, videoGroups);
+            finalizeVideoGroups(videoGroups);
             model.media.sort((a, b) -> Long.compare(b.file.lastModified(), a.file.lastModified()));
             AndroidUtilities.runOnUIThread(() -> {
                 loading = false;
@@ -206,17 +212,35 @@ public class DownloadedVideosActivity extends BaseFragment implements Notificati
         });
     }
 
-    private void collectManualDownloads(ArrayList<MessageObject> messages, CacheModel model, HashSet<String> paths) {
+    private void collectManualDownloads(ArrayList<MessageObject> messages, CacheModel model, HashSet<String> paths, HashMap<String, CacheModel.FileInfo> videoGroups) {
         for (MessageObject messageObject : messages) {
             if (!isVideoDownload(messageObject)) {
                 continue;
             }
-            File file = getFileLoader().getPathToMessage(messageObject.messageOwner);
-            if (!isCompleteFile(file, messageObject.getDocument().size)) {
-                continue;
+            // 只遍历下载记录对应的消息，不再扫描整个 Telegram Video 目录；
+            // 这样播放器缓存不会被误当成“已下载视频”。
+            addDocumentVersion(messageObject, messageObject.getDocument(), model, paths, videoGroups);
+            TLRPC.MessageMedia media = MessageObject.getMedia(messageObject.messageOwner);
+            if (media instanceof TLRPC.TL_messageMediaDocument) {
+                TLRPC.TL_messageMediaDocument mediaDocument = (TLRPC.TL_messageMediaDocument) media;
+                if (mediaDocument.alt_documents != null) {
+                    for (int i = 0; i < mediaDocument.alt_documents.size(); i++) {
+                        addDocumentVersion(messageObject, mediaDocument.alt_documents.get(i), model, paths, videoGroups);
+                    }
+                }
             }
-            addVideo(file, messageObject, model, paths);
         }
+    }
+
+    private void addDocumentVersion(MessageObject messageObject, TLRPC.Document document, CacheModel model, HashSet<String> paths, HashMap<String, CacheModel.FileInfo> videoGroups) {
+        if (document == null) {
+            return;
+        }
+        File file = getFileLoader().getPathToAttach(document);
+        if (!isCompleteFile(file, document.size)) {
+            return;
+        }
+        addVideo(file, messageObject, document, model, paths, videoGroups);
     }
 
     private boolean isVideoDownload(MessageObject messageObject) {
@@ -238,7 +262,7 @@ public class DownloadedVideosActivity extends BaseFragment implements Notificati
         return expectedSize <= 0 || file.length() >= expectedSize;
     }
 
-    private void collectVideos(File directory, CacheModel model, HashSet<String> paths) {
+    private void collectVideos(File directory, CacheModel model, HashSet<String> paths, HashMap<String, CacheModel.FileInfo> videoGroups) {
         if (directory == null) {
             return;
         }
@@ -248,14 +272,14 @@ public class DownloadedVideosActivity extends BaseFragment implements Notificati
         }
         for (File file : files) {
             if (file.isDirectory()) {
-                collectVideos(file, model, paths);
+                collectVideos(file, model, paths, videoGroups);
             } else if (!file.getName().equals(".nomedia") && isCompleteFile(file, 0)) {
-                addVideo(file, null, model, paths);
+                addVideo(file, null, null, model, paths, videoGroups);
             }
         }
     }
 
-    private void addVideo(File file, MessageObject messageObject, CacheModel model, HashSet<String> paths) {
+    private void addVideo(File file, MessageObject messageObject, TLRPC.Document document, CacheModel model, HashSet<String> paths, HashMap<String, CacheModel.FileInfo> videoGroups) {
         String path = file.getAbsolutePath();
         if (!paths.add(path)) {
             return;
@@ -264,6 +288,8 @@ public class DownloadedVideosActivity extends BaseFragment implements Notificati
         fileInfo.size = file.length();
         fileInfo.type = CacheControlActivity.TYPE_VIDEOS;
         fileInfo.messageObject = messageObject;
+        fileInfo.documentId = document != null ? document.id : 0;
+        fileInfo.qualityLabel = getQualityLabel(document);
         if (messageObject != null) {
             fileInfo.dialogId = messageObject.getDialogId();
             fileInfo.messageId = messageObject.getId();
@@ -276,7 +302,62 @@ public class DownloadedVideosActivity extends BaseFragment implements Notificati
                 fileInfo.messageType = metadata.messageType;
             }
         }
+
+        String groupKey = getVideoGroupKey(fileInfo);
+        if (groupKey != null) {
+            CacheModel.FileInfo existing = videoGroups.get(groupKey);
+            if (existing != null) {
+                if (existing.versions == null) {
+                    existing.versions = new ArrayList<>();
+                    existing.versions.add(existing);
+                }
+                existing.versions.add(fileInfo);
+                existing.qualityCount = existing.versions.size();
+                if (fileInfo.size > existing.size) {
+                    model.media.remove(existing);
+                    fileInfo.versions = existing.versions;
+                    fileInfo.qualityCount = existing.qualityCount;
+                    model.media.add(fileInfo);
+                    videoGroups.put(groupKey, fileInfo);
+                }
+                return;
+            }
+            videoGroups.put(groupKey, fileInfo);
+        }
         model.media.add(fileInfo);
+    }
+
+    private String getQualityLabel(TLRPC.Document document) {
+        if (document == null) {
+            return null;
+        }
+        for (int i = 0; i < document.attributes.size(); i++) {
+            TLRPC.DocumentAttribute attribute = document.attributes.get(i);
+            if (attribute instanceof TLRPC.TL_documentAttributeVideo) {
+                TLRPC.TL_documentAttributeVideo video = (TLRPC.TL_documentAttributeVideo) attribute;
+                if (video.w > 0 && video.h > 0) {
+                    return video.w + "×" + video.h;
+                }
+            }
+        }
+        return null;
+    }
+
+    private String getVideoGroupKey(CacheModel.FileInfo fileInfo) {
+        if (fileInfo.dialogId != 0 && fileInfo.messageId != 0) {
+            return fileInfo.dialogId + ":" + fileInfo.messageId;
+        }
+        return null;
+    }
+
+    private void finalizeVideoGroups(HashMap<String, CacheModel.FileInfo> videoGroups) {
+        for (CacheModel.FileInfo fileInfo : videoGroups.values()) {
+            if (fileInfo.versions == null || fileInfo.versions.isEmpty()) {
+                continue;
+            }
+            fileInfo.versions.sort((a, b) -> Long.compare(b.size, a.size));
+            fileInfo.qualityCount = fileInfo.versions.size();
+        }
     }
 
     private void updateSelection() {
@@ -324,15 +405,32 @@ public class DownloadedVideosActivity extends BaseFragment implements Notificati
 
     private void deleteSelected() {
         ArrayList<CacheModel.FileInfo> selected = new ArrayList<>(cacheModel.selectedFiles);
+        ArrayList<CacheModel.FileInfo> filesToDelete = new ArrayList<>();
         HashSet<String> selectedPaths = new HashSet<>();
         for (CacheModel.FileInfo fileInfo : selected) {
-            selectedPaths.add(fileInfo.file.getAbsolutePath());
+            if (fileInfo.versions != null && !fileInfo.versions.isEmpty()) {
+                for (CacheModel.FileInfo version : fileInfo.versions) {
+                    if (selectedPaths.add(version.file.getAbsolutePath())) {
+                        filesToDelete.add(version);
+                    }
+                }
+            } else if (selectedPaths.add(fileInfo.file.getAbsolutePath())) {
+                filesToDelete.add(fileInfo);
+            }
         }
 
         ArrayList<MessageObject> trackedMessages = new ArrayList<>();
+        HashSet<String> selectedGroupKeys = new HashSet<>();
+        for (CacheModel.FileInfo fileInfo : selected) {
+            String groupKey = getVideoGroupKey(fileInfo);
+            if (groupKey != null) {
+                selectedGroupKeys.add(groupKey);
+            }
+        }
         for (MessageObject messageObject : DownloadController.getInstance(currentAccount).recentDownloadingFiles) {
             File file = FileLoader.getInstance(currentAccount).getPathToMessage(messageObject.messageOwner);
-            if (file != null && selectedPaths.contains(file.getAbsolutePath())) {
+            String groupKey = messageObject.getDialogId() + ":" + messageObject.getId();
+            if (file != null && selectedPaths.contains(file.getAbsolutePath()) || selectedGroupKeys.contains(groupKey)) {
                 trackedMessages.add(messageObject);
             }
         }
@@ -344,7 +442,7 @@ public class DownloadedVideosActivity extends BaseFragment implements Notificati
         cacheModel.clearSelection();
         actionBar.hideActionMode();
         Utilities.globalQueue.postRunnable(() -> {
-            for (CacheModel.FileInfo fileInfo : selected) {
+            for (CacheModel.FileInfo fileInfo : filesToDelete) {
                 try {
                     fileInfo.file.delete();
                 } catch (Exception ignore) {

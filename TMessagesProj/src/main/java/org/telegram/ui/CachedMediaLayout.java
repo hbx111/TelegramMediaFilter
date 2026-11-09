@@ -43,6 +43,7 @@ import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.ActionBar.ActionBarMenuItem;
 import org.telegram.ui.ActionBar.ActionBarPopupWindow;
+import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BackDrawable;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
@@ -221,6 +222,14 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
                                     popupWindow.dismiss();
                                 }
                             });
+                            if (itemInner.file.versions != null && itemInner.file.versions.size() > 1) {
+                                ActionBarMenuItem.addItem(popupWindowLayout, R.drawable.msg_video, "选择版本", false, null).setOnClickListener(v -> {
+                                    showVersionPicker(itemInner.file, (MediaAdapter) adapter, recyclerListView);
+                                    if (popupWindow != null) {
+                                        popupWindow.dismiss();
+                                    }
+                                });
+                            }
                         } else if (((CacheCell) view).container.getChildAt(0) instanceof SharedAudioCell) {
                             ActionBarMenuItem.addItem(popupWindowLayout, R.drawable.msg_played, LocaleController.getString(R.string.PlayFile), false, null).setOnClickListener(v -> {
                                 openItem(itemInner.file, (CacheCell) view);
@@ -342,6 +351,38 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
         if (p >= 0) {
             PhotoViewer.getInstance().openPhotoForSelect(mediaAdapter.getPhotos(), adapter.itemInners.indexOf(itemInner), PhotoViewer.SELECT_TYPE_NO_SELECT, false, placeProvider, null);
         }
+    }
+
+    private void showVersionPicker(CacheModel.FileInfo fileInfo, MediaAdapter adapter, RecyclerListView recyclerListView) {
+        if (fileInfo.versions == null || fileInfo.versions.size() <= 1) {
+            return;
+        }
+        ArrayList<CacheModel.FileInfo> versions = new ArrayList<>(fileInfo.versions);
+        CharSequence[] items = new CharSequence[versions.size()];
+        for (int i = 0; i < versions.size(); i++) {
+            CacheModel.FileInfo version = versions.get(i);
+            String label = AndroidUtilities.formatFileSize(version.size);
+            if (version.qualityLabel != null && !version.qualityLabel.isEmpty()) {
+                label = version.qualityLabel + " · " + label;
+            }
+            items[i] = i == 0 ? label + " · 最高清" : label;
+        }
+        new AlertDialog.Builder(getContext())
+                .setTitle("选择清晰度版本")
+                .setItems(items, (dialog, which) -> openPhotoVersion(versions.get(which), adapter, recyclerListView))
+                .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                .show();
+    }
+
+    private void openPhotoVersion(CacheModel.FileInfo fileInfo, MediaAdapter adapter, RecyclerListView recyclerListView) {
+        PhotoViewer.getInstance().setParentActivity(parentFragment);
+        if (placeProvider == null) {
+            placeProvider = new BasePlaceProvider();
+        }
+        placeProvider.setRecyclerListView(recyclerListView);
+        ArrayList<Object> photoEntries = new ArrayList<>();
+        photoEntries.add(new MediaController.PhotoEntry(0, 0, 0, fileInfo.file.getPath(), 0, true, 0, 0, 0));
+        PhotoViewer.getInstance().openPhotoForSelect(photoEntries, 0, PhotoViewer.SELECT_TYPE_NO_SELECT, false, placeProvider, null);
     }
 
     private void openItem(CacheModel.FileInfo fileInfo, CacheCell cacheCell) {
@@ -955,6 +996,7 @@ public class CachedMediaLayout extends FrameLayout implements NestedSizeNotifier
                 cell.imageReceiver.setImage(ImageLocation.getForPath("thumb://" + 0 + ":" + file.file.getAbsolutePath()), size + "_" + size, thumb, null, null, 0);
                 cell.setVideoText(AndroidUtilities.formatFileSize(file.size), false);
             }
+            cell.setQualityCount(file.qualityCount);
             cell.setChecked(cacheModel.isSelected(file), animated);
         }
 

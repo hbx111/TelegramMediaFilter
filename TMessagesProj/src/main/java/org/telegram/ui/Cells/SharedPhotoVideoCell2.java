@@ -30,10 +30,12 @@ import android.text.TextPaint;
 import android.text.TextUtils;
 import android.util.Pair;
 import android.util.SparseArray;
+import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.FrameLayout;
+import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
@@ -144,6 +146,7 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
     private final AnimatedFloat animatedProgress = new AnimatedFloat(this, 0, 200, CubicBezierInterpolator.EASE_OUT_QUINT);
 
     CanvasButton canvasButton;
+    private TextView qualityBadge;
 
     private boolean check2, reorder;
     public void setCheck2() {
@@ -559,6 +562,42 @@ public class SharedPhotoVideoCell2 extends FrameLayout {
             videoInfoLayot = null;
         }
         this.drawVideoIcon = drawVideoIcon;
+    }
+
+    public void setQualityCount(int count) {
+        if (count <= 1) {
+            if (qualityBadge != null) {
+                qualityBadge.setVisibility(GONE);
+            }
+            return;
+        }
+        if (qualityBadge == null) {
+            qualityBadge = new TextView(getContext());
+            qualityBadge.setTextSize(10);
+            qualityBadge.setTextColor(Color.WHITE);
+            qualityBadge.setGravity(Gravity.CENTER);
+            qualityBadge.setSingleLine(true);
+            qualityBadge.setPadding(dp(5), dp(2), dp(5), dp(2));
+            qualityBadge.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+            qualityBadge.setClickable(false);
+            qualityBadge.setFocusable(false);
+
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(0xB3000000);
+            background.setCornerRadius(dp(4));
+            qualityBadge.setBackground(background);
+
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM | Gravity.RIGHT
+            );
+            lp.rightMargin = dp(4);
+            lp.bottomMargin = dp(4);
+            addView(qualityBadge, lp);
+        }
+        qualityBadge.setText(count + " 个清晰度");
+        qualityBadge.setVisibility(VISIBLE);
     }
 
     private float getPadding() {

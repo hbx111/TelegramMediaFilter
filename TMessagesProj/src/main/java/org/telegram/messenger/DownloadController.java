@@ -83,6 +83,11 @@ public class DownloadController extends BaseController implements NotificationCe
     public static final int DOWNLOAD_STATE_DOWNLOADING = 0;
     public static final int DOWNLOAD_STATE_COMPLETED = 1;
     public static final int DOWNLOAD_STATE_PAUSED = 2;
+    /**
+     * 已完成的下载记录是“用户资产”，不能像播放器缓存一样只保留最近 100 条。
+     * 这里保留 1000 条，既覆盖长期下载历史，也避免无限增长拖慢启动。
+     */
+    private static final int MAX_COMPLETED_DOWNLOAD_RECORDS = 1000;
     private static final int DOWNLOAD_STATE_FAILED = 10;
     private static final int DOWNLOAD_STATE_FAILED_STORAGE = 11;
     private static final int DOWNLOAD_STATE_FAILED_RETRY_LIMIT = 12;
@@ -1756,7 +1761,7 @@ public class DownloadController extends BaseController implements NotificationCe
                     try {
                         String req = String.format(Locale.ENGLISH, "UPDATE downloading_documents SET state = 1, date = %d WHERE hash = %d AND id = %d", System.currentTimeMillis(), parentObject.getDocument().dc_id,  parentObject.getDocument().id);
                         getMessagesStorage().getDatabase().executeFast(req).stepThis().dispose();
-                        getMessagesStorage().getDatabase().executeFast("DELETE FROM downloading_documents WHERE state = 1 AND rowid NOT IN (SELECT rowid FROM downloading_documents WHERE state = 1 ORDER BY date DESC LIMIT 100)").stepThis().dispose();
+                        getMessagesStorage().getDatabase().executeFast("DELETE FROM downloading_documents WHERE state = 1 AND rowid NOT IN (SELECT rowid FROM downloading_documents WHERE state = 1 ORDER BY date DESC LIMIT " + MAX_COMPLETED_DOWNLOAD_RECORDS + ")").stepThis().dispose();
                     } catch (Exception e) {
                         FileLog.e(e);
                     }
@@ -1830,7 +1835,7 @@ public class DownloadController extends BaseController implements NotificationCe
             ArrayList<MessageObject> failedMessages = new ArrayList<>();
             HashMap<String, DownloadTaskInfo> loadedTaskInfos = new HashMap<>();
             try {
-                getMessagesStorage().getDatabase().executeFast("DELETE FROM downloading_documents WHERE state = 1 AND rowid NOT IN (SELECT rowid FROM downloading_documents WHERE state = 1 ORDER BY date DESC LIMIT 100)").stepThis().dispose();
+                getMessagesStorage().getDatabase().executeFast("DELETE FROM downloading_documents WHERE state = 1 AND rowid NOT IN (SELECT rowid FROM downloading_documents WHERE state = 1 ORDER BY date DESC LIMIT " + MAX_COMPLETED_DOWNLOAD_RECORDS + ")").stepThis().dispose();
                 SQLiteCursor cursor2 = getMessagesStorage().getDatabase().queryFinalized("SELECT data, state FROM downloading_documents ORDER BY date DESC");
                 while (cursor2.next()) {
                     NativeByteBuffer data = cursor2.byteBufferValue(0);

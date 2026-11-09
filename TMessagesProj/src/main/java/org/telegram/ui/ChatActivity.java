@@ -1642,6 +1642,8 @@ public class ChatActivity extends BaseFragment implements
 
     private final static int copy = 10;
     private final static int forward = 11;
+    private final static int pikpak = 75;
+    private static final long PIKPAK_BOT_ID = 1862051423L;
     private final static int delete = 12;
     private final static int chat_enc_timer = 13;
     private final static int chat_menu_attach = 14;
@@ -3803,6 +3805,28 @@ public class ChatActivity extends BaseFragment implements
                     createDeleteMessagesAlert(null, null);
                 } else if (id == forward) {
                     openForward(true);
+                } else if (id == pikpak) {
+                    if (isPeerNoForwards() || hasSelectedNoforwardsMessage()) {
+                        BulletinFactory.of(ChatActivity.this).createErrorBulletin("当前会话禁止转发").show();
+                        return;
+                    }
+                    ArrayList<MessageObject> fmessages = new ArrayList<>();
+                    for (int a = 1; a >= 0; a--) {
+                        for (int b = 0; b < selectedMessagesIds[a].size(); b++) {
+                            fmessages.add(selectedMessagesIds[a].valueAt(b));
+                        }
+                    }
+                    if (fmessages.isEmpty()) {
+                        return;
+                    }
+                    TLRPC.User pikpakUser = getMessagesController().getUser(PIKPAK_BOT_ID);
+                    if (pikpakUser == null || !pikpakUser.bot || pikpakUser.deleted) {
+                        BulletinFactory.of(ChatActivity.this).createErrorBulletin("请先打开 PikPak 机器人并发送 /start").show();
+                        return;
+                    }
+                    getSendMessagesHelper().sendMessage(fmessages, PIKPAK_BOT_ID, false, false, true, 0, 0);
+                    BulletinFactory.of(ChatActivity.this).createSimpleBulletin(R.raw.forward, "已加入 PikPak 转发队列 (" + fmessages.size() + " 个)").show();
+                    clearSelectionMode();
                 } else if (id == share) {
                     share();
                 } else if (id == open_direct) {
@@ -10386,6 +10410,7 @@ public class ChatActivity extends BaseFragment implements
             if (!isSavedMessages && getDialogId() != UserObject.VERIFY) {
                 actionModeViews.add(actionMode.addItemWithWidth(forward, R.drawable.msg_forward, dp(48), LocaleController.getString(R.string.Forward)));
             }
+            actionModeViews.add(actionMode.addItemWithWidth(pikpak, R.drawable.msg_send, dp(48), "转发到 PikPak"));
             actionModeViews.add(actionMode.addItemWithWidth(share, R.drawable.msg_shareout, dp(48), LocaleController.getString(R.string.ShareFile)));
             actionModeViews.add(actionMode.addItemWithWidth(delete, R.drawable.msg_delete, dp(48), LocaleController.getString(R.string.Delete)));
         } else {
@@ -19426,6 +19451,7 @@ public class ChatActivity extends BaseFragment implements
                 ActionBarMenuItem starItem = actionBar.createActionMode().getItem(star);
                 ActionBarMenuItem editItem = actionBar.createActionMode().getItem(edit);
                 ActionBarMenuItem forwardItem = actionBar.createActionMode().getItem(forward);
+                ActionBarMenuItem pikpakItem = actionBar.createActionMode().getItem(pikpak);
                 ActionBarMenuItem deleteItem = actionBar.createActionMode().getItem(delete);
                 ActionBarMenuItem tagItem = actionBar.createActionMode().getItem(tag_message);
                 ActionBarMenuItem shareItem = actionBar.createActionMode().getItem(share);
@@ -19468,6 +19494,11 @@ public class ChatActivity extends BaseFragment implements
                     if (actionsButtonsLayout != null) {
                         actionsButtonsLayout.setForwardButtonEnabled(cantForwardMessagesCount == 0 || noforwards, false);
                     }
+                }
+                if (pikpakItem != null) {
+                    boolean pikpakEnabled = !noforwards && cantForwardMessagesCount == 0;
+                    pikpakItem.setEnabled(pikpakEnabled);
+                    pikpakItem.setAlpha(pikpakEnabled ? 1.0f : 0.5f);
                 }
                 if (saveItem != null) {
                     saveItem.setVisibility(((canSaveMusicCount > 0 && canSaveDocumentsCount == 0) || (canSaveMusicCount == 0 && canSaveDocumentsCount > 0)) && cantSaveMessagesCount == 0 ? View.VISIBLE : View.GONE);

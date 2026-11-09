@@ -300,6 +300,7 @@ public class SharedConfig {
     public static boolean streamAllVideo = false;
     public static boolean streamMkv = false;
     public static boolean saveStreamMedia = true;
+    public static boolean showMediaSpoilers = true;
     public static boolean pauseMusicOnRecord = false;
     public static boolean pauseMusicOnMedia = false;
     public static boolean noiseSupression;
@@ -625,6 +626,7 @@ public class SharedConfig {
             }
             streamMedia = preferences.getBoolean("streamMedia", true);
             saveStreamMedia = preferences.getBoolean("saveStreamMedia", true);
+            showMediaSpoilers = preferences.getBoolean("showMediaSpoilers", true);
             pauseMusicOnRecord = preferences.getBoolean("pauseMusicOnRecord", true);
             pauseMusicOnMedia = preferences.getBoolean("pauseMusicOnMedia", false);
             forceDisableTabletMode = preferences.getBoolean("forceDisableTabletMode", false);
@@ -1361,6 +1363,14 @@ public class SharedConfig {
         SharedPreferences preferences = MessagesController.getGlobalMainSettings();
         SharedPreferences.Editor editor = preferences.edit();
         editor.putBoolean("saveStreamMedia", saveStreamMedia);
+        editor.apply();
+    }
+
+    public static void toggleShowMediaSpoilers() {
+        showMediaSpoilers = !showMediaSpoilers;
+        SharedPreferences preferences = MessagesController.getGlobalMainSettings();
+        SharedPreferences.Editor editor = preferences.edit();
+        editor.putBoolean("showMediaSpoilers", showMediaSpoilers);
         editor.apply();
     }
 

@@ -646,7 +646,13 @@ public class MessageObject {
     }
 
     public boolean hasMediaSpoilers() {
-        return !isRepostPreview && (messageOwner.media != null && messageOwner.media.spoiler || needDrawBluredPreview()) || isHiddenSensitive();
+        if (needDrawBluredPreview()) {
+            return true;
+        }
+        if (SharedConfig.showMediaSpoilers) {
+            return false;
+        }
+        return !isRepostPreview && (messageOwner.media != null && messageOwner.media.spoiler) || isHiddenSensitive();
     }
 
     public Boolean isSensitiveCached;

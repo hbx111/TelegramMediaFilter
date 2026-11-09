@@ -4,6 +4,8 @@ apply plugin: 'com.android.library'
 apply plugin: 'org.telegram.build-plugin'
 apply plugin: 'idea'
 
+ext.isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
+
 idea {
     module {
         excludeDirs += [
@@ -170,6 +172,7 @@ android {
         }
 
         fast {
+            matchingFallbacks = ['release']
             jniDebuggable false
             minifyEnabled false
             shrinkResources false
@@ -186,7 +189,7 @@ android {
             buildConfigField "boolean", "DEBUG_VERSION", "false"
             buildConfigField "boolean", "DEBUG_PRIVATE_VERSION", "false"
             buildConfigField "boolean", "BUNDLE", "false"
-            buildConfigField "boolean", "BUILD_HOST_IS_WINDOWS", isWindows
+            buildConfigField "boolean", "BUILD_HOST_IS_WINDOWS", isWindows.toString()
             buildConfigField "int", "VERSION_NUM", "6"
         }
 

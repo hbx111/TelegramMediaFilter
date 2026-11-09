@@ -2217,6 +2217,24 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                             options.dismiss();
                         });
                     }
+
+                    ActionBarMenuSubItem showSpoilerThumbnails = new ActionBarMenuSubItem(context, true, false, true, resourcesProvider);
+                    showSpoilerThumbnails.setTextAndIcon("始终显示缩略图", 0);
+                    showSpoilerThumbnails.setChecked(SharedConfig.showMediaSpoilers);
+                    showSpoilerThumbnails.setOnClickListener(v -> {
+                        SharedConfig.toggleShowMediaSpoilers();
+                        showSpoilerThumbnails.setChecked(SharedConfig.showMediaSpoilers);
+                        if (!SharedConfig.showMediaSpoilers && sharedMediaData[0] != null) {
+                            for (MessageObject object : sharedMediaData[0].getMessages()) {
+                                object.isMediaSpoilersRevealedInSharedMedia = false;
+                            }
+                        }
+                        if (photoVideoAdapter != null) {
+                            photoVideoAdapter.notifyDataSetChanged();
+                        }
+                        options.dismiss();
+                    });
+                    options.getLayout().addView(showSpoilerThumbnails);
                 }
 
                 final boolean hasDifferentTypes = isStories || (sharedMediaData[0].hasPhotos && sharedMediaData[0].hasVideos) || !sharedMediaData[0].endReached[0] || !sharedMediaData[0].endReached[1] || !sharedMediaData[0].startReached;
@@ -2397,8 +2415,8 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
 
                 // PikPak button
                 pikpakItem = new ActionBarMenuItem(context, null, getThemedColor(Theme.key_actionBarActionModeDefaultSelector), getThemedColor(Theme.key_actionBarActionModeDefaultIcon), false);
-                pikpakItem.setIcon(R.drawable.msg_sendfile);
-                pikpakItem.setContentDescription("PikPak");
+                pikpakItem.setIcon(R.drawable.msg_send);
+                pikpakItem.setContentDescription("转发到 PikPak");
                 pikpakItem.setDuplicateParentStateEnabled(false);
                 actionModeLayout.addView(pikpakItem, new LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.MATCH_PARENT));
                 actionModeViews.add(pikpakItem);
@@ -3787,7 +3805,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                     if (mediaPage.listView.getAdapter() == savedMessagesSearchAdapter) {
                         return false;
                     }
-                    if (startChannelMediaRangeSelection(mediaPage, view, position)) {
+                    if (startMediaRangeSelection(mediaPage, view, position)) {
                         return true;
                     }
                     if (isActionModeShowed && mediaPage.selectedType != TAB_SAVED_DIALOGS) {
@@ -3841,7 +3859,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
 
                 @Override
                 public void onMove(float dx, float dy) {
-                    if (mediaPage.selectedType == TAB_PHOTOVIDEO && isChannelMediaRangeSelectionEnabled()) {
+                    if (mediaPage.selectedType == TAB_PHOTOVIDEO && isMediaRangeSelectionEnabled()) {
                         return;
                     }
                     if (profileActivity != null && AndroidUtilities.displaySize.x > AndroidUtilities.displaySize.y) {
@@ -3851,7 +3869,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
 
                 @Override
                 public void onLongClickRelease() {
-                    if (mediaPage.selectedType == TAB_PHOTOVIDEO && isChannelMediaRangeSelectionEnabled()) {
+                    if (mediaPage.selectedType == TAB_PHOTOVIDEO && isMediaRangeSelectionEnabled()) {
                         return;
                     }
                     if (profileActivity != null && AndroidUtilities.displaySize.x > AndroidUtilities.displaySize.y) {
@@ -8048,11 +8066,8 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         }
     }
 
-    private boolean isChannelMediaRangeSelectionEnabled() {
-        if (profileActivity == null || !DialogObject.isChatDialog(dialog_id)) {
-            return false;
-        }
-        return ChatObject.isChannel(profileActivity.getMessagesController().getChat(-dialog_id));
+    private boolean isMediaRangeSelectionEnabled() {
+        return profileActivity != null && dialog_id != 0;
     }
 
     private MessageObject getPhotoVideoMessage(int position) {
@@ -8100,7 +8115,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
 
                 @Override
                 public boolean isIndexSelectable(int index) {
-                    return isChannelMediaRangeSelectionEnabled() && getPhotoVideoMessage(index) != null;
+                    return isMediaRangeSelectionEnabled() && getPhotoVideoMessage(index) != null;
                 }
 
                 @Override
@@ -8126,8 +8141,8 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         return mediaItemRangeSelector;
     }
 
-    private boolean startChannelMediaRangeSelection(MediaPage mediaPage, View view, int position) {
-        if (!isChannelMediaRangeSelectionEnabled() || photoVideoChangeColumnsAnimation || mediaPage.selectedType != TAB_PHOTOVIDEO || mediaPage.listView.getAdapter() != photoVideoAdapter || !(view instanceof SharedPhotoVideoCell2)) {
+    private boolean startMediaRangeSelection(MediaPage mediaPage, View view, int position) {
+        if (!isMediaRangeSelectionEnabled() || photoVideoChangeColumnsAnimation || mediaPage.selectedType != TAB_PHOTOVIDEO || mediaPage.listView.getAdapter() != photoVideoAdapter || !(view instanceof SharedPhotoVideoCell2)) {
             return false;
         }
         MessageObject messageObject = getPhotoVideoMessage(position);
@@ -8350,7 +8365,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                     cantDeleteMessagesCount--;
                 }
             } else {
-                if (selectedFiles[0].size() + selectedFiles[1].size() >= 100 && !(selectedMode == TAB_PHOTOVIDEO && isChannelMediaRangeSelectionEnabled())) {
+                if (selectedFiles[0].size() + selectedFiles[1].size() >= 100 && !(selectedMode == TAB_PHOTOVIDEO && isMediaRangeSelectionEnabled())) {
                     return;
                 }
                 selectedFiles[loadIndex].put(message.getId(), message);

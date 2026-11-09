@@ -904,7 +904,7 @@ public class ImageLoader {
                 int height = bitmap.getHeight();
                 float scale = Math.max(width, height) / (float) LOCAL_VIDEO_THUMBNAIL_CACHE_SIZE;
                 if (scale > 1f) {
-                    outputBitmap = Bitmaps.createScaledBitmap(bitmap, Math.max(1, Math.round(width / scale)), Math.max(1, Math.round(height / scale)), true);
+                    outputBitmap = Bitmap.createScaledBitmap(bitmap, Math.max(1, Math.round(width / scale)), Math.max(1, Math.round(height / scale)), true);
                 }
 
                 tempFile.delete();

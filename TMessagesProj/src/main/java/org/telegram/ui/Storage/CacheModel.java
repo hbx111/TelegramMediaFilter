@@ -378,6 +378,23 @@ public class CacheModel {
         public MessageObject messageObject;
         public int messageId;
         public int messageType;
+        /**
+         * When a video message has several downloaded quality variants, this points
+         * to all of them. The FileInfo stored in {@link CacheModel#media} is the
+         * representative (highest-quality) version, so the grid shows one card per
+         * message instead of one card per file.
+         */
+        public java.util.ArrayList<FileInfo> versions;
+        public int qualityCount = 1;
+        /**
+         * 记录这条文件对应的实际文档 ID；同一消息的 alt_documents 各有自己的 ID，
+         * 后续删除或选择版本时可以据此避免把主文档和清晰度版本混在一起。
+         */
+        public long documentId;
+        /**
+         * 从文档属性解析出的分辨率标签，例如 1920x1080；缺失时 UI 退化为显示文件大小。
+         */
+        public String qualityLabel;
 
         public FileInfo(File cacheFileTemp) {
             file = cacheFileTemp;
